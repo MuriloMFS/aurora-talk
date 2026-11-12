@@ -1,0 +1,23 @@
+{
+  "name": "aurora",
+  "private": true,
+  "packageManager": "pnpm@12.18.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "server": "pnpm --filter @aurora/server start",
+    "server:dev": "pnpm --filter @aurora/server dev",
+    "voice": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/livekit.ps1",
+    "dev": "pnpm --filter @aurora/desktop tauri dev",
+    "dev:web": "pnpm --filter @aurora/desktop dev",
+    "release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1",
+    "build:desktop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test"
+  },
+  "devDependencies": {
+    "turbo": "^2.11.10",
+    "typescript": "^7.0.2"
+  }
+}

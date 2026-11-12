@@ -1,0 +1,197 @@
+import { describe, expect, it } from "vitest";
+import type { Guild, Message, User } from "@aurora/schema";
+import { TYPING_TTL_MS, chatReducer, initialChatState, isUnread, mentionCountOf, type ChatState } from "./chat-store";
+
+const ana: User = { id: "1", username: "ana", displayName: "Ana" };
+const bia: User = { id: "2", username: "bia", displayName: "Bia" };
+const guild: Guild = {
+  id: "10",
+  name: "Aurora",
+  ownerId: "1",
+  channels: [
+    { id: "21", guildId: "10", type: "text", name: "design", position: 1 },
+    { id: "20", guildId: "10", type: "text", name: "geral", position: 0 },
+    { id: "30", guildId: "10", type: "voice", name: "Sala de voz", position: 2 },
+  ],
+  members: [
+    { user: ana, joinedAt: 1, online: true },
+    { user: bia, joinedAt: 2, online: false },
+  ],
+  voiceStates: [{ userId: "2", channelId: "30", muted: false, deafened: false, streaming: false }],
+};
+const msg = (id: string, author: User, channelId = "20", content = id, mentions: string[] = []): Message => ({
+  id,
+  channelId,
+  author,
+  content,
+  createdAt: Number(id),
+  editedAt: null,
+  replyTo: null,
+  reactions: [],
+  mentions,
+});
+const create = (state: ChatState, message: Message) => chatReducer(state, { type: "dispatch", event: { t: "MESSAGE_CREATE", d: message }, now: 0 });
+
+function ready(): ChatState {
+  return chatReducer(initialChatState, { type: "ready", user: ana, guilds: [guild] });
+}
+
+describe("chatReducer", () => {
+  it("READY monta servidores com canais ordenados por posição", () => {
+    const state = ready();
+    expect(state.status).toBe("ready");
+    expect(state.guildOrder).toEqual(["10"]);
+    expect(state.guilds["10"]?.channelIds).toEqual(["20", "21", "30"]);
+    expect(state.members["10"]?.["2"]?.online).toBe(false);
+    expect(state.voice["10"]?.["2"]?.channelId).toBe("30");
+  });
+
+  it("voz: entrar, mutar e sair atualizam quem está na sala", () => {
+    let state = chatReducer(ready(), {
+      type: "dispatch",
+      event: { t: "VOICE_STATE_UPDATE", d: { guildId: "10", userId: "1", channelId: "30", muted: false, deafened: false, streaming: false } },
+      now: 0,
+    });
+    expect(Object.keys(state.voice["10"] ?? {}).sort()).toEqual(["1", "2"]);
+    state = chatReducer(state, {
+      type: "dispatch",
+      event: { t: "VOICE_STATE_UPDATE", d: { guildId: "10", userId: "1", channelId: "30", muted: true, deafened: true, streaming: true } },
+      now: 0,
+    });
+    expect(state.voice["10"]?.["1"]).toMatchObject({ muted: true, deafened: true, streaming: true });
+    state = chatReducer(state, {
+      type: "dispatch",
+      event: { t: "VOICE_STATE_UPDATE", d: { guildId: "10", userId: "2", channelId: null, muted: false, deafened: false, streaming: false } },
+      now: 0,
+    });
+    expect(state.voice["10"]?.["2"]).toBeUndefined();
+  });
+
+  it("mensagens de outros em canal não ativo marcam não lido; focar limpa", () => {
+    let state = chatReducer(ready(), { type: "focusChannel", channelId: "21" });
+    state = create(state, msg("100", bia));
+    expect(isUnread(state, "20")).toBe(true);
+    state = chatReducer(state, { type: "focusChannel", channelId: "20" });
+    expect(isUnread(state, "20")).toBe(false);
+  });
+
+  it("a minha própria mensagem nunca deixa o canal não lido", () => {
+    let state = chatReducer(ready(), { type: "focusChannel", channelId: "21" });
+    state = create(state, msg("100", bia));
+    state = create(state, msg("101", ana));
+    expect(isUnread(state, "20")).toBe(false);
+  });
+
+  it("menções a mim contam; mensagem repetida (eco + evento) não conta duas vezes", () => {
+    let state = chatReducer(ready(), { type: "focusChannel", channelId: "21" });
+    state = chatReducer(state, { type: "history", channelId: "20", messages: [], mode: "latest", pageSize: 50 });
+    state = create(state, msg("100", bia, "20", "<@1>", ["1"]));
+    state = create(state, msg("100", bia, "20", "<@1>", ["1"]));
+    state = create(state, msg("101", bia, "20", "sem menção"));
+    state = create(state, msg("102", bia, "20", "<@2>", ["2"]));
+    expect(mentionCountOf(state, "20")).toBe(1);
+    state = chatReducer(state, { type: "focusChannel", channelId: "20" });
+    expect(mentionCountOf(state, "20")).toBe(0);
+  });
+
+  it("janela sem foco: o canal aberto também acumula; voltar o foco lê", () => {
+    let state = chatReducer(ready(), { type: "focusChannel", channelId: "20" });
+    state = chatReducer(state, { type: "windowFocus", focused: false });
+    state = create(state, msg("100", bia, "20", "<@1>", ["1"]));
+    expect(isUnread(state, "20")).toBe(true);
+    expect(mentionCountOf(state, "20")).toBe(1);
+    state = chatReducer(state, { type: "windowFocus", focused: true });
+    expect(isUnread(state, "20")).toBe(false);
+    expect(state.reads["20"]?.lastReadId).toBe("100");
+  });
+
+  it("READY traz a leitura do servidor; READ_STATE_UPDATE (outro aparelho) avança e nunca volta", () => {
+    let state = chatReducer(chatReducer(initialChatState, { type: "focusChannel", channelId: "21" }), {
+      type: "ready",
+      user: ana,
+      guilds: [guild],
+      readStates: [
+        { channelId: "20", lastReadId: "100", lastMessageId: "105", mentionCount: 2 },
+        { channelId: "21", lastReadId: "1", lastMessageId: "1", mentionCount: 0 },
+      ],
+    });
+    expect(isUnread(state, "20")).toBe(true);
+    expect(mentionCountOf(state, "20")).toBe(2);
+    const readUpTo = (lastReadId: string) =>
+      (state = chatReducer(state, { type: "dispatch", event: { t: "READ_STATE_UPDATE", d: { channelId: "20", lastReadId } }, now: 0 }));
+    readUpTo("103");
+    expect(mentionCountOf(state, "20")).toBe(2); // ainda faltam mensagens
+    readUpTo("105");
+    expect(isUnread(state, "20")).toBe(false);
+    expect(mentionCountOf(state, "20")).toBe(0);
+    readUpTo("101");
+    expect(state.reads["20"]?.lastReadId).toBe("105");
+  });
+
+  it("reações ao vivo: somar, não duplicar, tirar e sumir com o emoji vazio", () => {
+    let state = chatReducer(ready(), { type: "history", channelId: "20", messages: [msg("5", ana)], mode: "latest", pageSize: 50 });
+    const react = (t: "MESSAGE_REACTION_ADD" | "MESSAGE_REACTION_REMOVE", userId: string, emoji = "👍") =>
+      (state = chatReducer(state, { type: "dispatch", event: { t, d: { channelId: "20", messageId: "5", userId, emoji } }, now: 0 }));
+    react("MESSAGE_REACTION_ADD", "1");
+    react("MESSAGE_REACTION_ADD", "2");
+    react("MESSAGE_REACTION_ADD", "2");
+    react("MESSAGE_REACTION_ADD", "2", "🎉");
+    expect(state.messages["20"]!.items[0]!.reactions).toEqual([
+      { emoji: "👍", userIds: ["1", "2"] },
+      { emoji: "🎉", userIds: ["2"] },
+    ]);
+    react("MESSAGE_REACTION_REMOVE", "2", "🎉");
+    expect(state.messages["20"]!.items[0]!.reactions).toEqual([{ emoji: "👍", userIds: ["1", "2"] }]);
+  });
+
+  it("evento desconhecido (servidor mais novo) não quebra o estado", () => {
+    const state = ready();
+    expect(chatReducer(state, { type: "dispatch", event: { t: "ALGO_NOVO", d: {} } as never, now: 0 })).toBe(state);
+  });
+
+  it("histórico + eventos não duplicam e ficam em ordem", () => {
+    let state = chatReducer(ready(), { type: "history", channelId: "20", messages: [msg("5", ana), msg("6", bia)], mode: "latest", pageSize: 50 });
+    state = chatReducer(state, { type: "messageUpsert", message: msg("7", ana) });
+    state = chatReducer(state, { type: "dispatch", event: { t: "MESSAGE_CREATE", d: msg("7", ana) }, now: 0 });
+    state = chatReducer(state, { type: "history", channelId: "20", messages: [msg("3", bia), msg("4", ana)], mode: "older", pageSize: 2 });
+    const bucket = state.messages["20"]!;
+    expect(bucket.items.map((m) => m.id)).toEqual(["3", "4", "5", "6", "7"]);
+    expect(bucket.hasMore).toBe(true);
+  });
+
+  it("edita e apaga mensagens carregadas", () => {
+    let state = chatReducer(ready(), { type: "history", channelId: "20", messages: [msg("5", ana)], mode: "latest", pageSize: 50 });
+    state = chatReducer(state, { type: "dispatch", event: { t: "MESSAGE_UPDATE", d: { ...msg("5", ana), content: "novo", editedAt: 9 } }, now: 0 });
+    expect(state.messages["20"]!.items[0]!.content).toBe("novo");
+    state = chatReducer(state, { type: "dispatch", event: { t: "MESSAGE_DELETE", d: { id: "5", channelId: "20" } }, now: 0 });
+    expect(state.messages["20"]!.items).toHaveLength(0);
+  });
+
+  it("digitando expira e some quando a pessoa envia", () => {
+    let state = chatReducer(ready(), { type: "dispatch", event: { t: "TYPING_START", d: { channelId: "20", userId: "2" } }, now: 1000 });
+    expect(state.typing["20"]?.["2"]).toBe(1000 + TYPING_TTL_MS);
+    state = chatReducer(state, { type: "typingExpire", now: 1000 + TYPING_TTL_MS + 1 });
+    expect(state.typing["20"]).toBeUndefined();
+
+    state = chatReducer(state, { type: "dispatch", event: { t: "TYPING_START", d: { channelId: "20", userId: "2" } }, now: 0 });
+    state = chatReducer(state, { type: "dispatch", event: { t: "MESSAGE_CREATE", d: msg("8", bia) }, now: 0 });
+    expect(state.typing["20"]?.["2"]).toBeUndefined();
+  });
+
+  it("ignora o próprio 'digitando' e atualiza presença e canais novos", () => {
+    let state = chatReducer(ready(), { type: "dispatch", event: { t: "TYPING_START", d: { channelId: "20", userId: "1" } }, now: 0 });
+    expect(state.typing["20"]).toBeUndefined();
+    state = chatReducer(state, { type: "dispatch", event: { t: "PRESENCE_UPDATE", d: { userId: "2", online: true } }, now: 0 });
+    expect(state.members["10"]?.["2"]?.online).toBe(true);
+    state = chatReducer(state, { type: "dispatch", event: { t: "CHANNEL_CREATE", d: { id: "22", guildId: "10", type: "text", name: "off", position: 3 } }, now: 0 });
+    expect(state.guilds["10"]?.channelIds).toEqual(["20", "21", "30", "22"]);
+  });
+
+  it("reconexão (READY sem leitura, servidor antigo) descarta o cache de mensagens mas mantém não lidas", () => {
+    let state = chatReducer(ready(), { type: "history", channelId: "20", messages: [msg("5", ana)], mode: "latest", pageSize: 50 });
+    state = create(state, msg("6", bia, "21"));
+    state = chatReducer(state, { type: "ready", user: ana, guilds: [guild] });
+    expect(state.messages["20"]).toBeUndefined();
+    expect(isUnread(state, "21")).toBe(true);
+  });
+});
