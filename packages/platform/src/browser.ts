@@ -1,7 +1,18 @@
 import { isWebUrl, type PlatformPort } from "./index";
 
+/** Último uso do teclado/mouse dentro da página (o navegador não vê o resto do computador). */
+let lastActivity = Date.now();
+let tracking = false;
+function trackActivity(): void {
+  if (tracking || typeof document === "undefined") return;
+  tracking = true;
+  const mark = () => (lastActivity = Date.now());
+  for (const type of ["pointermove", "pointerdown", "keydown", "wheel", "touchstart"]) document.addEventListener(type, mark, { passive: true, capture: true });
+}
+
 /** Implementação para desenvolvimento e testes no navegador (sem APIs nativas). */
 export function createBrowserPlatform(): PlatformPort {
+  trackActivity();
   return {
     kind: "browser",
     async getInfo() {
@@ -36,6 +47,9 @@ export function createBrowserPlatform(): PlatformPort {
     },
     async setDesktopSettings() {
       throw new Error("Essas opções só existem no app instalado.");
+    },
+    async getIdleSeconds() {
+      return Math.floor((Date.now() - lastActivity) / 1000);
     },
   };
 }

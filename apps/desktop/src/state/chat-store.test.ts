@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_EVERYONE_PERMISSIONS, PERMISSIONS, hasPermission, type Guild, type Message, type User } from "@aurora/schema";
-import { TYPING_TTL_MS, chatReducer, dmList, dmMentionTotal, dmName, initialChatState, isBlocked, isUnread, mentionCountOf, myChannelPermissions, myPermissions, myTimeout, type ChatState } from "./chat-store";
+import { TYPING_TTL_MS, chatReducer, dmList, dmMentionTotal, dmName, initialChatState, isBlocked, isUnread, mentionCountOf, myChannelPermissions, myPermissions, myTimeout, presenceOf, type ChatState } from "./chat-store";
 
 const ana: User = { id: "1", username: "ana", displayName: "Ana" };
 const bia: User = { id: "2", username: "bia", displayName: "Bia" };
@@ -228,6 +228,20 @@ describe("chatReducer", () => {
     expect(state.reads["71"]).toBeUndefined();
     state = dispatch(state, { t: "RELATIONSHIP_UPDATE", d: { user: bia, type: null, since: 2, online: false } });
     expect(state.relationships["2"]).toBeUndefined();
+  });
+
+  it("status: ausente, não perturbe e personalizado chegam ao vivo; servidor antigo (só online) continua funcionando", () => {
+    let state = ready();
+    const dispatch = (s: ChatState, event: Extract<Parameters<typeof chatReducer>[1], { type: "dispatch" }>["event"]) => chatReducer(s, { type: "dispatch", event, now: 0 });
+    const custom = { text: "Estudando", emoji: "📚", expiresAt: null };
+    state = dispatch(state, { t: "PRESENCE_UPDATE", d: { userId: "2", online: true, status: "dnd", customStatus: custom } });
+    expect(presenceOf(state, "2")).toEqual({ status: "dnd", customStatus: custom });
+    expect(state.members["10"]?.["2"]?.online).toBe(true);
+    state = dispatch(state, { t: "PRESENCE_UPDATE", d: { userId: "2", online: false } }); // servidor antigo
+    expect(presenceOf(state, "2")).toEqual({ status: "offline", customStatus: null });
+    state = dispatch(state, { t: "USER_SETTINGS_UPDATE", d: { dmPolicy: "friends", status: "invisible", customStatus: null } });
+    expect(state.settings).toEqual({ dmPolicy: "friends", status: "invisible", customStatus: null });
+    expect(presenceOf(state, "999")).toEqual({ status: "offline", customStatus: null });
   });
 
   it("canal renomeado e apagado; servidor renomeado; expulsão de outra pessoa e a minha", () => {

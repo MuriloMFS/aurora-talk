@@ -42,6 +42,8 @@ windows = { version = "0.62.2", features = [
   "Win32_System_Com_StructuredStorage",
   "Win32_System_Threading",
   "Win32_System_Variant",
+  "Win32_System_SystemInformation",
+  "Win32_UI_Input_KeyboardAndMouse",
 ] }
 
 # Perfil de release voltado a tamanho (orçamento do ADR-001 §7).

@@ -62,7 +62,18 @@ export class GatewayTestClient {
     if (this.buffer.some((f) => f.op === "dispatch" && f.t === t)) throw new Error(`evento inesperado ${t}`);
   }
 
-  close(): void {
+  /** Garante que nenhum frame que cumpra a condição chega no intervalo (confere a fila inteira). */
+  async expectNoMatch(match: (frame: ServerFrame) => boolean, waitMs = 300): Promise<void> {
+    await new Promise((r) => setTimeout(r, waitMs));
+    if (this.buffer.some(match)) throw new Error("frame inesperado");
+  }
+
+  /** Descarta o que já chegou (para conferir só o que vier depois). */
+  drain(): void {
+    this.buffer.length = 0;
+  }
+
+    close(): void {
     this.ws.close();
   }
 }

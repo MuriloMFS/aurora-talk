@@ -49,7 +49,13 @@ export interface AppSettings {
     /** Contornos mais fortes nos divisores (mais fácil de ver as áreas). */
     strongBorders: boolean;
   };
+  presence: {
+    /** Minutos sem mexer no computador até ficar "Ausente" (0 = nunca). */
+    idleMinutes: number;
+  };
 }
+
+export const IDLE_MINUTES = [0, 5, 10, 15, 30] as const;
 
 export const CHAT_FONT_SIZES = [12, 14, 15, 16, 18, 20, 24] as const;
 
@@ -68,6 +74,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   notifications: { desktop: true, badge: true, flash: true },
   appearance: { density: "cozy", chatFontSize: 16 },
   accessibility: { motion: "system", strongBorders: false },
+  presence: { idleMinutes: 10 },
 };
 
 /** Processamento de voz que vale de fato, conforme o perfil. */
@@ -97,6 +104,7 @@ export function sanitizeSettings(raw: unknown): AppSettings {
   const notifications = obj(root.notifications);
   const appearance = obj(root.appearance);
   const accessibility = obj(root.accessibility);
+  const presence = obj(root.presence);
   const fontSize = num(appearance.chatFontSize, 12, 24, d.appearance.chatFontSize);
   return {
     voice: {
@@ -125,6 +133,9 @@ export function sanitizeSettings(raw: unknown): AppSettings {
     accessibility: {
       motion: oneOf(accessibility.motion, ["system", "reduce"], d.accessibility.motion),
       strongBorders: bool(accessibility.strongBorders, d.accessibility.strongBorders),
+    },
+    presence: {
+      idleMinutes: (IDLE_MINUTES as readonly number[]).includes(presence.idleMinutes as number) ? (presence.idleMinutes as number) : d.presence.idleMinutes,
     },
   };
 }

@@ -76,6 +76,11 @@ export interface PlatformPort {
   getDesktopSettings(): Promise<DesktopSettings | null>;
   /** Salva e aplica; devolve o que ficou valendo. */
   setDesktopSettings(settings: DesktopSettings): Promise<DesktopSettings>;
+  /**
+   * Segundos desde o último uso do teclado ou do mouse: no app, no computador inteiro (o Windows sabe);
+   * no navegador, só dentro da página. Serve para o status "Ausente" automático.
+   */
+  getIdleSeconds(): Promise<number>;
 }
 
 /** Só links da web saem do app (evita `file:`, `javascript:` etc.). */

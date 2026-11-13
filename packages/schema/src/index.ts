@@ -66,6 +66,9 @@ export interface Member {
   roles: Id[];
   /** De castigo até este instante (ms); `null` = livre. */
   timeoutUntil?: number | null;
+  /** 1.10: online, ausente, não perturbe ou offline (`online` continua valendo para apps antigos). */
+  status?: PresenceStatus;
+  customStatus?: CustomStatus | null;
 }
 
 /** Minha relação com outra pessoa (cada lado tem a sua). */
@@ -76,6 +79,8 @@ export interface Relationship {
   since: number;
   /** Para a lista de amigos (bloqueados aparecem sempre offline). */
   online: boolean;
+  status?: PresenceStatus;
+  customStatus?: CustomStatus | null;
 }
 
 /** Conversa direta: a dois (`dm`) ou em grupo (`group_dm`, até `LIMITS.groupDmMax` pessoas). */
@@ -93,8 +98,26 @@ export interface DmChannel {
 
 /** Quem pode me mandar mensagem direta: quem divide servidor comigo (padrão) ou só amigos. */
 export type DmPolicy = "servers" | "friends";
+
+/** Como os outros me veem. Invisível aparece como `offline`. */
+export type PresenceStatus = "online" | "idle" | "dnd" | "offline";
+/** O que eu escolho (o "ausente" também vem sozinho, quando paro de mexer no computador). */
+export type UserStatus = "online" | "idle" | "dnd" | "invisible";
+export interface CustomStatus {
+  text: string;
+  emoji: string | null;
+  /** Some sozinho nesse instante (ms); `null` = até eu tirar. */
+  expiresAt: number | null;
+}
+/** O status personalizado ainda vale agora? */
+export const activeCustomStatus = (custom: CustomStatus | null | undefined, now: number = Date.now()): CustomStatus | null =>
+  custom && (custom.expiresAt === null || custom.expiresAt > now) ? custom : null;
+
 export interface UserSettings {
   dmPolicy: DmPolicy;
+  /** 1.10 (ausentes em servidores antigos). */
+  status?: UserStatus;
+  customStatus?: CustomStatus | null;
 }
 
 export interface Guild {
@@ -256,6 +279,7 @@ export const LIMITS = {
   /** Pessoas num grupo de conversa direta (contando quem criou). */
   groupDmMax: 10,
   groupNameMax: 100,
+  customStatusMax: 128,
   filenameMax: 120,
   auditPageSize: 50,
 } as const;
@@ -319,7 +343,9 @@ export type ClientFrame =
   | { op: "typing"; channelId: Id }
   | { op: "voice_join"; channelId: Id; muted: boolean; deafened: boolean }
   | { op: "voice_state"; muted: boolean; deafened: boolean; streaming: boolean }
-  | { op: "voice_leave" };
+  | { op: "voice_leave" }
+  /** 1.10: parei (ou voltei a) mexer no computador — vira "ausente" para os outros. */
+  | { op: "idle"; idle: boolean };
 
 export type DispatchEvent =
   | { t: "MESSAGE_CREATE"; d: Message }
@@ -328,7 +354,7 @@ export type DispatchEvent =
   | { t: "GUILD_CREATE"; d: Guild }
   | { t: "CHANNEL_CREATE"; d: Channel }
   | { t: "MEMBER_ADD"; d: { guildId: Id; member: Member } }
-  | { t: "PRESENCE_UPDATE"; d: { userId: Id; online: boolean } }
+  | { t: "PRESENCE_UPDATE"; d: { userId: Id; online: boolean; status?: PresenceStatus; customStatus?: CustomStatus | null } }
   | { t: "TYPING_START"; d: { channelId: Id; userId: Id } }
   /** `channelId: null` = saiu da voz. */
   | { t: "VOICE_STATE_UPDATE"; d: { guildId: Id; userId: Id; channelId: Id | null; muted: boolean; deafened: boolean; streaming: boolean; serverMuted?: boolean } }
@@ -358,7 +384,9 @@ export type DispatchEvent =
   | { t: "DM_CHANNEL_CREATE"; d: DmChannel }
   | { t: "DM_CHANNEL_UPDATE"; d: DmChannel }
   /** Saí do grupo, fui tirado, ou fechei a conversa. */
-  | { t: "DM_CHANNEL_DELETE"; d: { id: Id } };
+  | { t: "DM_CHANNEL_DELETE"; d: { id: Id } }
+  /** Mudei status, status personalizado ou preferência em outro aparelho (só para mim). */
+  | { t: "USER_SETTINGS_UPDATE"; d: UserSettings };
 
 export interface ReactionEvent {
   channelId: Id;
@@ -385,6 +413,7 @@ export const V2_EVENTS: ReadonlySet<DispatchEvent["t"]> = new Set([
   "DM_CHANNEL_CREATE",
   "DM_CHANNEL_UPDATE",
   "DM_CHANNEL_DELETE",
+  "USER_SETTINGS_UPDATE",
 ]);
 
 export type ServerFrame =

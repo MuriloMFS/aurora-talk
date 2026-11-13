@@ -128,6 +128,11 @@
   - Bloquear: a pessoa não manda mensagem direta nem pede amizade (sem ser avisada), e as mensagens dela nos servidores ficam recolhidas ("Mostrar").
   - Minha conta → Mensagens diretas: aceitar de quem divide servidor (padrão) ou só de amigos.
   - Servidor: conversas diretas são canais sem servidor (a tabela de canais foi refeita na migração, sem perder mensagens); quem está fora da conversa recebe 404 em tudo.
+- **1.10.0** — **status** (fase D do [10](10-recursos-basicos.md)):
+  - Clique no seu avatar (painel do usuário): Online, Ausente, Não perturbe e Invisível, mais status personalizado (texto + emoji, limpar depois de 30 min, 1 h, 4 h, hoje ou nunca).
+  - Ausente automático depois de X minutos sem mexer no computador (no app, o Windows informa o tempo; ajuste em Minha conta). Com mais de um aparelho, só fica ausente quando todos estão parados.
+  - Não perturbe: sem som, notificação nem ícone piscando; o número de menções continua. Invisível: aparece offline para todos.
+  - Status e personalizado aparecem na lista de membros, nos amigos e nas conversas diretas, com forma e texto (não só cor).
 
 ## O que fica para depois (ordem sugerida)
 escolha de microfone/fone · DMs e amigos · anexos e prévia de links · cargos e permissões (pacote `permissions` do doc 03) · lista virtualizada para canais grandes · servidor hospedado (VPS) com HTTPS · depois, o restante do roadmap.

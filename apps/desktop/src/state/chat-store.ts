@@ -9,6 +9,8 @@ import {
   type DmChannel,
   type Relationship,
   type UserSettings,
+  type CustomStatus,
+  type PresenceStatus,
   type Guild,
   type Id,
   type Member,
@@ -120,6 +122,22 @@ export const dmName = (dm: DmChannel): string =>
 export const dmMentionTotal = (state: ChatState): number => Object.keys(state.dms).reduce((sum, id) => sum + mentionCountOf(state, id), 0);
 
 export const isBlocked = (state: ChatState, userId: Id): boolean => state.relationships[userId]?.type === "blocked";
+
+/** Presença vinda do servidor (servidor antigo só manda `online`). */
+function presenceFields(d: { online: boolean; status?: PresenceStatus; customStatus?: CustomStatus | null }) {
+  return { online: d.online, status: d.status ?? (d.online ? "online" : "offline"), customStatus: d.customStatus ?? null } as const;
+}
+
+/** Como uma pessoa aparece: membro de algum servidor ou amigo (o primeiro que souber). */
+export function presenceOf(state: ChatState, userId: Id): { status: PresenceStatus; customStatus: CustomStatus | null } {
+  const rel = state.relationships[userId];
+  if (rel && rel.type !== "blocked") return { status: rel.status ?? (rel.online ? "online" : "offline"), customStatus: rel.customStatus ?? null };
+  for (const members of Object.values(state.members)) {
+    const m = members[userId];
+    if (m) return { status: m.status ?? (m.online ? "online" : "offline"), customStatus: m.customStatus ?? null };
+  }
+  return { status: "offline", customStatus: null };
+}
 
 /** Minhas permissões neste servidor (o servidor confere de novo; aqui só serve para esconder o que não posso). */
 export function myPermissions(state: ChatState, guildId: Id, now: number = Date.now()): number {
@@ -313,10 +331,10 @@ function applyDispatch(state: ChatState, event: DispatchEvent, now: number): Cha
       const members = { ...state.members };
       for (const [guildId, guildMembers] of Object.entries(members)) {
         const member = guildMembers[event.d.userId];
-        if (member) members[guildId] = { ...guildMembers, [event.d.userId]: { ...member, online: event.d.online } };
+        if (member) members[guildId] = { ...guildMembers, [event.d.userId]: { ...member, ...presenceFields(event.d) } };
       }
       const rel = state.relationships[event.d.userId];
-      const relationships = rel && rel.type !== "blocked" ? { ...state.relationships, [rel.user.id]: { ...rel, online: event.d.online } } : state.relationships;
+      const relationships = rel && rel.type !== "blocked" ? { ...state.relationships, [rel.user.id]: { ...rel, ...presenceFields(event.d) } } : state.relationships;
       return { ...state, members, relationships };
     }
     case "MESSAGE_CREATE":
@@ -347,6 +365,8 @@ function applyDispatch(state: ChatState, event: DispatchEvent, now: number): Cha
     }
     case "USER_UPDATE":
       return withUser(state, event.d);
+    case "USER_SETTINGS_UPDATE":
+      return { ...state, settings: { ...state.settings, ...event.d } };
     case "RELATIONSHIP_UPDATE": {
       const { [event.d.user.id]: _old, ...rest } = state.relationships;
       const relationships = event.d.type === null ? rest : { ...rest, [event.d.user.id]: { user: event.d.user, type: event.d.type, since: event.d.since, online: event.d.online } };

@@ -82,6 +82,9 @@ export function createTauriPlatform(): PlatformPort {
     async requestAttention() {
       await invoke("request_attention");
     },
+    async getIdleSeconds() {
+      return invoke<number>("idle_seconds");
+    },
     // Rust em apps/desktop/src-tauri/src/desktop_settings.rs (registro do Windows + arquivo do app).
     getDesktopSettings() {
       return invoke<DesktopSettings>("get_desktop_settings");

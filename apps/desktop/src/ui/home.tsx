@@ -1,6 +1,7 @@
 import { useId, useState, type FormEvent } from "react";
 import { Ban, Check, LogOut, MessageCircle, Pencil, Plus, UserMinus, UserPlus, Users, X } from "lucide-react";
-import { LIMITS, type DmChannel, type DmPolicy, type Id, type Relationship, type User } from "@aurora/schema";
+import { LIMITS, type DmChannel, type DmPolicy, type Id, type PresenceStatus, type Relationship, type User } from "@aurora/schema";
+import { PRESENCE_LABEL, customStatusText } from "./status";
 import { ApiError, type ApiClient } from "../net/api";
 import { dmName } from "../state/chat-store";
 import { Avatar, ICON, ICON_SM, badgeCount } from "./shell";
@@ -10,8 +11,8 @@ import { FormStatus, SettingsGroup, SwitchRow } from "./settings/controls";
 const errorText = (error: unknown) => (error instanceof ApiError ? error.message : "Algo deu errado. Confira a conexão e tente de novo.");
 
 /** Avatar da conversa: a pessoa (a dois) ou o ícone de grupo. */
-export function DmAvatar({ dm, online }: { dm: DmChannel; online?: boolean }) {
-  if (dm.type === "dm" && dm.recipients[0]) return <Avatar user={dm.recipients[0]} online={online} />;
+export function DmAvatar({ dm, status }: { dm: DmChannel; status?: PresenceStatus }) {
+  if (dm.type === "dm" && dm.recipients[0]) return <Avatar user={dm.recipients[0]} status={status} />;
   return (
     <span className="avatar avatar--md dm-group-avatar" aria-hidden="true">
       <Users {...ICON_SM} />
@@ -28,7 +29,7 @@ export function HomeSidebar({
   pendingCount,
   mentions,
   unread,
-  isOnline,
+  presenceOf,
   onFriends,
   onOpenDm,
   onCloseDm,
@@ -41,7 +42,7 @@ export function HomeSidebar({
   pendingCount: number;
   mentions: Readonly<Record<Id, number>>;
   unread: ReadonlySet<Id>;
-  isOnline: (userId: Id) => boolean;
+  presenceOf: (userId: Id) => PresenceStatus;
   onFriends: () => void;
   onOpenDm: (id: Id) => void;
   onCloseDm: (dm: DmChannel) => void;
@@ -90,7 +91,7 @@ export function HomeSidebar({
                   aria-label={[name, mentionCount > 0 && `${mentionCount} não lidas`].filter(Boolean).join(", ")}
                   onClick={() => onOpenDm(dm.id)}
                 >
-                  <DmAvatar dm={dm} online={other ? isOnline(other.id) : undefined} />
+                  <DmAvatar dm={dm} status={other ? presenceOf(other.id) : undefined} />
                   <span className="dm-row__text">
                     <span className="channel__name">{name}</span>
                     {dm.type === "group_dm" && <span className="dm-row__sub">{dm.recipients.length + 1} pessoas</span>}
@@ -205,14 +206,14 @@ export function FriendsView({
             <ul className="friends__list">
               {list.map((rel) => (
                 <li key={rel.user.id} className="friend-row">
-                  <Avatar user={rel.user} online={rel.type === "blocked" ? undefined : rel.online} />
+                  <Avatar user={rel.user} status={rel.type === "blocked" ? undefined : (rel.status ?? (rel.online ? "online" : "offline"))} />
                   <div className="friend-row__text">
                     <span className="friend-row__name">{rel.user.displayName}</span>
                     <span className="friend-row__sub">
                       @{rel.user.username}
                       {rel.type === "incoming" && " · quer ser seu amigo"}
                       {rel.type === "outgoing" && " · pedido enviado"}
-                      {rel.type === "friend" && (rel.online ? " · online" : " · offline")}
+                      {rel.type === "friend" && ` · ${(rel.online && customStatusText(rel.customStatus)) || PRESENCE_LABEL[rel.status ?? (rel.online ? "online" : "offline")].toLowerCase()}`}
                     </span>
                   </div>
                   <div className="friend-row__actions">
@@ -520,7 +521,7 @@ export function DmPrivacy({ dmPolicy, api, onChange }: { dmPolicy: DmPolicy; api
           const next: DmPolicy = on ? "servers" : "friends";
           setStatus(null);
           api
-            .updateUserSettings(next)
+            .updateUserSettings({ dmPolicy: next })
             .then(() => onChange(next))
             .catch((error: unknown) => setStatus({ kind: "error", text: errorText(error) }));
         }}

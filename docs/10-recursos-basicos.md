@@ -89,6 +89,8 @@ A base de tudo que envolve upload. Começa pela foto de perfil, que é o caso ma
 
 - **Fase C entregue na 1.9.0** (2026-11-13): 8 testes no servidor (pedido, aceitar, recusar; conversa a dois que só aparece para o outro com a primeira mensagem; quem está fora recebe 404 e não vê o "digitando"; fechar e reabrir; quem pode mandar mensagem; bloqueio sem revelar; grupo com dono, renomear, pôr, tirar e sair; migração da tabela de canais) e conferência visual (amigos, pendentes, conversa, grupo nos temas escuro e claro, mensagem de bloqueado recolhida, 390 px).
 
+- **Fase D entregue na 1.10.0** (2026-11-13): 4 testes no servidor (ausente só com todos os aparelhos parados; não perturbe e personalizado ao vivo e nos outros aparelhos; invisível offline também para amigos; personalizado que vence sozinho e validação) e conferência visual (menu de status, personalizado com emoji, lista de membros e amigos nos dois temas).
+
 ## Decisões que precisam de você
 1. **Provedor de e-mail** (fase E): sem um, a recuperação é só por códigos. Opções: um serviço de envio
    transacional (exige domínio verificado, ex.: o muriloferreira.dev) ou deixar sem e-mail por enquanto.

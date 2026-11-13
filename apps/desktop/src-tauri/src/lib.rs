@@ -172,6 +172,27 @@ fn request_attention(window: tauri::WebviewWindow) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Segundos desde o último uso do teclado ou do mouse no computador inteiro (status "Ausente").
+#[tauri::command]
+fn idle_seconds() -> u64 {
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::SystemInformation::GetTickCount;
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+        let mut info = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+        // SAFETY: estrutura do tamanho certo, preenchida pelo Windows; sem ponteiros guardados.
+        if unsafe { GetLastInputInfo(&mut info) }.as_bool() {
+            let now = unsafe { GetTickCount() };
+            return u64::from(now.wrapping_sub(info.dwTime)) / 1000;
+        }
+        0
+    }
+    #[cfg(not(windows))]
+    {
+        0
+    }
+}
+
 /// Traz a janela principal para a frente (segunda instância, clique em notificação).
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -226,6 +247,7 @@ pub fn run() {
             install_update,
             set_taskbar_badge,
             request_attention,
+            idle_seconds,
             system_audio::system_audio_start,
             system_audio::system_audio_stop,
             desktop_settings::get_desktop_settings,
@@ -267,4 +289,14 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
+}
+
+#[cfg(test)]
+mod idle_tests {
+    /// O Windows responde o tempo desde o último uso do teclado/mouse (algo plausível: menos de 30 dias).
+    #[test]
+    fn idle_seconds_responde_um_tempo_plausivel() {
+        let seconds = super::idle_seconds();
+        assert!(seconds < 30 * 24 * 3600, "tempo parado absurdo: {seconds}");
+    }
 }

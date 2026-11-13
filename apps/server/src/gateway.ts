@@ -1,5 +1,5 @@
 import type { WebSocket } from "ws";
-import { hasPermission, CLOSE_CODES, HEARTBEAT_INTERVAL_MS, V2_EVENTS, type Channel, type ClientFrame, type DispatchEvent, type Id, type ServerFrame, type VoiceState } from "@aurora/schema";
+import { activeCustomStatus, hasPermission, CLOSE_CODES, type CustomStatus, type PresenceStatus, HEARTBEAT_INTERVAL_MS, V2_EVENTS, type Channel, type ClientFrame, type DispatchEvent, type Id, type ServerFrame, type VoiceState } from "@aurora/schema";
 import { hashToken } from "./auth.ts";
 import { RateLimiter } from "./rate-limit.ts";
 import type { LiveState, ServerChannel, Store } from "./store.ts";
@@ -13,6 +13,8 @@ interface Connection {
   tokenHash: string;
   /** Versão do protocolo do cliente (`identify.v`); 1 = app 1.2.x. */
   version: number;
+  /** A pessoa parou de mexer no computador onde esta conexão está (1.10). */
+  idle: boolean;
 }
 
 /** Sessão de voz de um usuário (uma por vez), presa à conexão que entrou. */
@@ -26,7 +28,7 @@ function parseFrame(raw: string): ClientFrame | null {
   try {
     const value: unknown = JSON.parse(raw);
     if (typeof value !== "object" || value === null || !("op" in value)) return null;
-    const f = value as { op: unknown; token?: unknown; v?: unknown; channelId?: unknown; muted?: unknown; deafened?: unknown; streaming?: unknown };
+    const f = value as { op: unknown; token?: unknown; v?: unknown; channelId?: unknown; muted?: unknown; deafened?: unknown; streaming?: unknown; idle?: unknown };
     const flags = typeof f.muted === "boolean" && typeof f.deafened === "boolean";
     switch (f.op) {
       case "heartbeat":
@@ -44,6 +46,8 @@ function parseFrame(raw: string): ClientFrame | null {
           : null;
       case "voice_leave":
         return { op: "voice_leave" };
+      case "idle":
+        return typeof f.idle === "boolean" ? { op: "idle", idle: f.idle } : null;
       default:
         return null;
     }
@@ -65,7 +69,35 @@ export class Gateway implements LiveState {
     this.store = store;
   }
 
-  readonly isOnline = (userId: Id): boolean => (this.connections.get(userId)?.size ?? 0) > 0;
+  /** Última presença enviada de cada pessoa (para não repetir o mesmo aviso). */
+  private readonly lastPresence = new Map<Id, string>();
+
+  /**
+   * Como os outros veem a pessoa: sem conexão ou invisível = offline; não perturbe e ausente escolhidos
+   * valem sempre; senão, ausente quando todas as conexões dela estão paradas.
+   */
+  presenceOf(userId: Id): { status: PresenceStatus; customStatus: CustomStatus | null } {
+    const connections = this.connections.get(userId);
+    if (!connections || connections.size === 0 || this.closing) return { status: "offline", customStatus: null };
+    const chosen = this.store.statusOf(userId);
+    if (chosen === "invisible") return { status: "offline", customStatus: null };
+    const status: PresenceStatus = chosen === "dnd" ? "dnd" : chosen === "idle" || [...connections].every((c) => c.idle) ? "idle" : "online";
+    return { status, customStatus: activeCustomStatus(this.store.customStatusOf(userId)) };
+  }
+
+  readonly isOnline = (userId: Id): boolean => this.presenceOf(userId).status !== "offline";
+
+  /** Avisa a pessoa (outros aparelhos) e quem a vê, se a presença dela mudou. */
+  refreshPresence(userId: Id): void {
+    const presence = this.presenceOf(userId);
+    const key = JSON.stringify(presence);
+    if (this.lastPresence.get(userId) === key) return;
+    this.lastPresence.set(userId, key); // offline também fica guardado: invisível entrando não gera aviso
+    this.dispatchToUsers([userId, ...this.store.peersOf(userId)], {
+      t: "PRESENCE_UPDATE",
+      d: { userId, online: presence.status !== "offline", status: presence.status, customStatus: presence.customStatus },
+    });
+  }
 
   voiceStatesOf(guildId: Id): VoiceState[] {
     return [...this.voice.values()].filter((v) => v.guildId === guildId).map((v) => v.state);
@@ -107,8 +139,8 @@ export class Gateway implements LiveState {
           socket.close(CLOSE_CODES.invalidSession, "invalid session");
           return;
         }
-        connection = { socket, userId: user.id, tokenHash, version: frame.v ?? 1 };
-        const first = this.register(connection);
+        connection = { socket, userId: user.id, tokenHash, version: frame.v ?? 1, idle: false };
+        this.register(connection);
         lastHeartbeat = Date.now();
         const guilds = this.store.guildsOf(user.id, this);
         // leitura só dos canais que a pessoa vê (canal privado não aparece nem como "não lido")
@@ -125,11 +157,15 @@ export class Gateway implements LiveState {
                 readStates: readStatesAll,
                 privateChannels,
                 relationships: this.store.relationshipsOf(user.id, this),
-                settings: { dmPolicy: this.store.dmPolicyOf(user.id) },
+                settings: {
+                  dmPolicy: this.store.dmPolicyOf(user.id),
+                  status: this.store.statusOf(user.id),
+                  customStatus: this.store.customStatusOf(user.id),
+                },
               }
             : { op: "ready", user, guilds },
         );
-        if (first) this.broadcastPresence(user.id, true);
+        this.refreshPresence(user.id);
         return;
       }
       if (!connection) return; // demais operações exigem identify
@@ -158,6 +194,11 @@ export class Gateway implements LiveState {
         case "voice_leave":
           this.leaveVoice(connection.userId);
           return;
+        case "idle":
+          if (connection.idle === frame.idle) return;
+          connection.idle = frame.idle;
+          this.refreshPresence(connection.userId);
+          return;
       }
     });
 
@@ -169,7 +210,8 @@ export class Gateway implements LiveState {
         return;
       }
       if (this.voice.get(connection.userId)?.connection === connection) this.leaveVoice(connection.userId);
-      if (this.unregister(connection)) this.broadcastPresence(connection.userId, false);
+      this.unregister(connection);
+      this.refreshPresence(connection.userId);
     });
     socket.on("error", () => socket.terminate());
   }
@@ -299,7 +341,7 @@ export class Gateway implements LiveState {
 
   /* ---------- presença ---------- */
 
-  /** Retorna true se esta é a primeira conexão do usuário (ficou online). */
+  /** Retorna true se esta é a primeira conexão do usuário. */
   private register(conn: Connection): boolean {
     const set = this.connections.get(conn.userId) ?? new Set<Connection>();
     set.add(conn);
@@ -317,7 +359,4 @@ export class Gateway implements LiveState {
     return true;
   }
 
-  private broadcastPresence(userId: Id, online: boolean): void {
-    this.dispatchToUsers(this.store.peersOf(userId), { t: "PRESENCE_UPDATE", d: { userId, online } });
-  }
 }

@@ -8,6 +8,7 @@ import type { SoundPlayer } from "../../sounds";
 import { ICON, ICON_SM } from "../shell";
 import { AccountSection } from "./AccountSection";
 import { DmPrivacy } from "../home";
+import { IdleSetting } from "../status";
 import { VoiceSection } from "./VoiceSection";
 import { AccessibilitySection, AdvancedSection, AppearanceSection, KeybindsSection, LanguageSection, NotificationsSection, SoundsSection, WindowsSection } from "./sections";
 
@@ -91,6 +92,7 @@ export function SettingsScreen(props: SettingsScreenProps) {
         <>
           <AccountSection me={props.me} api={props.api} onUserUpdated={props.onUserUpdated} onLogout={props.onLogout} />
           <DmPrivacy dmPolicy={props.dmPolicy} api={props.api} onChange={props.onDmPolicy} />
+          <IdleSetting />
         </>
       );
       break;

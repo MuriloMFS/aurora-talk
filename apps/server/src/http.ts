@@ -9,6 +9,7 @@ import {
   USERNAME_PATTERN,
   extractMentionIds,
   isValidEmoji,
+  activeCustomStatus,
   normalizeChannelName,
   normalizeVoiceChannelName,
   ALL_PERMISSIONS,
@@ -61,7 +62,7 @@ import { nextId } from "./ids.ts";
 import type { IceServerSource } from "./turn.ts";
 import { registerUpdateRoutes } from "./updates.ts";
 
-export const SERVER_VERSION = "1.9.0";
+export const SERVER_VERSION = "1.10.0";
 
 export class HttpError extends Error {
   readonly status: number;
@@ -135,7 +136,18 @@ const friendRequestBody = z.union([
   z.object({ userId: z.string().max(20) }),
 ]);
 const relationshipBody = z.object({ type: z.enum(["friend", "blocked"]) });
-const settingsBody = z.object({ dmPolicy: z.enum(["servers", "friends"]) });
+const settingsBody = z.object({
+  dmPolicy: z.enum(["servers", "friends"]).optional(),
+  status: z.enum(["online", "idle", "dnd", "invisible"]).optional(),
+  customStatus: z
+    .object({
+      text: z.string().trim().max(LIMITS.customStatusMax, `O status pode ter no máximo ${LIMITS.customStatusMax} caracteres.`),
+      emoji: z.string().max(32).nullable(),
+      expiresAt: z.number().int().nullable(),
+    })
+    .nullable()
+    .optional(),
+});
 const dmCreateBody = z.object({
   recipientIds: z
     .array(z.string().max(20))
@@ -632,16 +644,31 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     return reply.status(204).send();
   });
 
+  const settingsOf = (userId: Id) => ({ dmPolicy: store.dmPolicyOf(userId), status: store.statusOf(userId), customStatus: store.customStatusOf(userId) });
+
   app.get("/api/users/@me/settings", async (request) => {
     const { user } = authenticate(request);
-    return { dmPolicy: store.dmPolicyOf(user.id) };
+    return settingsOf(user.id);
   });
 
+  // Preferência de mensagens diretas, status e status personalizado (vale em todos os aparelhos na hora).
   app.patch("/api/users/@me/settings", async (request) => {
     const { user } = authenticate(request);
-    const { dmPolicy } = settingsBody.parse(request.body ?? {});
-    store.setDmPolicy(user.id, dmPolicy);
-    return { dmPolicy };
+    limit(actionLimiter, `action:${user.id}`);
+    const body = settingsBody.parse(request.body ?? {});
+    if (body.customStatus) {
+      const { text, emoji, expiresAt } = body.customStatus;
+      if (emoji !== null && !isValidEmoji(emoji)) throw new HttpError(400, "invalid_emoji", "Escolha um emoji para o status (ou nenhum).");
+      if (!text && emoji === null) throw new HttpError(400, "invalid_request", "Escreva algo ou escolha um emoji para o status.");
+      if (expiresAt !== null && !activeCustomStatus(body.customStatus)) throw new HttpError(400, "invalid_request", "Esse horário para limpar o status já passou.");
+    }
+    if (body.dmPolicy) store.setDmPolicy(user.id, body.dmPolicy);
+    if (body.status) store.setStatus(user.id, body.status);
+    if (body.customStatus !== undefined) store.setCustomStatus(user.id, body.customStatus);
+    const settings = settingsOf(user.id);
+    gateway.dispatchToUser(user.id, { t: "USER_SETTINGS_UPDATE", d: settings });
+    gateway.refreshPresence(user.id);
+    return settings;
   });
 
   /* ---------- conversas diretas ---------- */

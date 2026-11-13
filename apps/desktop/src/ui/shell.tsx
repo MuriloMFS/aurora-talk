@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import {
   ArrowRightLeft,
   Home,
@@ -21,7 +21,8 @@ import {
   UserPlus,
   Volume2,
 } from "lucide-react";
-import { isPrivateChannel, type Channel, type ChannelType, type Id, type Member, type Role, type User, type VoiceState } from "@aurora/schema";
+import { isPrivateChannel, type Channel, type ChannelType, type CustomStatus, type Id, type Member, type PresenceStatus, type Role, type User, type UserStatus, type VoiceState } from "@aurora/schema";
+import { PRESENCE_LABEL, StatusMenu, customStatusText } from "./status";
 import type { GuildEntry } from "../state/chat-store";
 import { avatarIndex, initials } from "../messages";
 import { fileUrl } from "../avatar-image";
@@ -30,7 +31,21 @@ import { memberColor, memberGroups } from "../roles";
 export const ICON = { size: 20, strokeWidth: 1.75, "aria-hidden": true } as const;
 export const ICON_SM = { size: 16, strokeWidth: 1.75, "aria-hidden": true } as const;
 
-export function Avatar({ user, size = "md", online, speaking }: { user: User; size?: "sm" | "md" | "lg" | "xl"; online?: boolean; speaking?: boolean }) {
+export function Avatar({
+  user,
+  size = "md",
+  online,
+  status,
+  speaking,
+}: {
+  user: User;
+  size?: "sm" | "md" | "lg" | "xl";
+  online?: boolean;
+  /** 1.10: online, ausente, não perturbe ou offline (tem prioridade sobre `online`). */
+  status?: PresenceStatus;
+  speaking?: boolean;
+}) {
+  const presence: PresenceStatus | undefined = status ?? (online === undefined ? undefined : online ? "online" : "offline");
   // foto que não carregou (servidor fora, arquivo apagado): volta para as iniciais
   const [failed, setFailed] = useState<string | null>(null);
   const photo = user.avatar && user.avatar !== failed ? user.avatar : null;
@@ -41,9 +56,7 @@ export function Avatar({ user, size = "md", online, speaking }: { user: User; si
       ) : (
         <span aria-hidden="true">{initials(user.displayName)}</span>
       )}
-      {online !== undefined && (
-        <span className={`presence presence--${online ? "online" : "offline"}`} role="img" aria-label={online ? "Online" : "Offline"} />
-      )}
+      {presence !== undefined && <span className={`presence presence--${presence}`} role="img" aria-label={PRESENCE_LABEL[presence]} />}
     </span>
   );
 }
@@ -189,6 +202,18 @@ interface SidebarProps {
   /** Aviso discreto sobre a minha transmissão (ex.: foi sem o áudio do sistema). */
   shareNotice: string | null;
   onToggleStage: () => void;
+  /** Meu status (menu no avatar do painel do usuário). */
+  statusControl?: StatusControl;
+}
+
+export interface StatusControl {
+  status: UserStatus;
+  customStatus: CustomStatus | null;
+  /** Como os outros me veem agora (inclui o ausente automático). */
+  presence: PresenceStatus;
+  onStatus: (status: UserStatus) => void;
+  onEditCustom: () => void;
+  onClearCustom: () => void;
 }
 
 export function Sidebar(props: SidebarProps) {
@@ -326,7 +351,7 @@ export function Sidebar(props: SidebarProps) {
         </ul>
       </nav>
       <VoicePanel {...props} />
-      <UserPanel {...props} />
+      <UserPanel me={props.me} online={props.online} statusText={props.statusText} onOpenSettings={props.onOpenSettings} statusControl={props.statusControl} />
     </aside>
   );
 }
@@ -568,16 +593,52 @@ function VoicePanel({
   );
 }
 
-export function UserPanel({ me, online, statusText, onOpenSettings }: Pick<SidebarProps, "me" | "online" | "statusText" | "onOpenSettings">) {
+export function UserPanel({ me, online, statusText, onOpenSettings, statusControl }: Pick<SidebarProps, "me" | "online" | "statusText" | "onOpenSettings" | "statusControl">) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const closeMenu = useCallback(() => setMenuOpen(false), []);
+  const custom = statusControl ? customStatusText(statusControl.customStatus) : null;
+  const presence: PresenceStatus = !online ? "offline" : (statusControl?.presence ?? "online");
+  const line = !online ? statusText : custom ?? (statusControl ? (statusControl.status === "invisible" ? "Invisível" : PRESENCE_LABEL[presence]) : statusText);
+  const identity = (
+    <>
+      <Avatar user={me} status={presence} />
+      <span className="userpanel__text">
+        <span className="userpanel__name">{me.displayName}</span>
+        <span className="userpanel__status">{line}</span>
+      </span>
+    </>
+  );
   return (
     <footer className="userpanel">
-      <Avatar user={me} online={online} />
-      <div className="userpanel__text">
-        <span className="userpanel__name" title={`${me.displayName} (@${me.username})`}>
-          {me.displayName}
-        </span>
-        <span className="userpanel__status">{statusText}</span>
-      </div>
+      {statusControl ? (
+        <div className="userpanel__who">
+          <button
+            type="button"
+            className="userpanel__identity"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            aria-label={`${me.displayName}, ${line}. Mudar status`}
+            title={`${me.displayName} (@${me.username}) · ${statusText}`}
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            {identity}
+          </button>
+          {menuOpen && (
+            <StatusMenu
+              status={statusControl.status}
+              customStatus={statusControl.customStatus}
+              onStatus={statusControl.onStatus}
+              onEditCustom={statusControl.onEditCustom}
+              onClearCustom={statusControl.onClearCustom}
+              onClose={closeMenu}
+            />
+          )}
+        </div>
+      ) : (
+        <div className="userpanel__identity" title={`${me.displayName} (@${me.username})`}>
+          {identity}
+        </div>
+      )}
       <div className="userpanel__actions">
         <button type="button" className="icon-button" aria-label="Configurações (Ctrl+,)" title="Configurações" onClick={onOpenSettings}>
           <Settings {...ICON} />
@@ -622,7 +683,7 @@ export function MemberList({
               const color = memberColor(roles, member);
               return (
               <li key={member.user.id} className={member.online ? "member" : "member member--offline"}>
-                <Avatar user={member.user} online={member.online} />
+                <Avatar user={member.user} online={member.online} status={member.status} />
                 <div className="member__text">
                   <span className="member__name">
                     {color !== null && <span className="role-dot" data-color={color} aria-hidden="true" />}
@@ -634,7 +695,7 @@ export function MemberList({
                       </span>
                     )}
                   </span>
-                  <span className="member__activity">@{member.user.username}</span>
+                  <span className="member__activity">{(member.online && customStatusText(member.customStatus)) || `@${member.user.username}`}</span>
                 </div>
                 {member.user.id !== meId && (onMessage || onAddFriend) && (
                   <span className="member__actions">

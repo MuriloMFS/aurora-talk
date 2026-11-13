@@ -26,10 +26,13 @@ import {
   myChannelPermissions,
   myPermissions,
   myTimeout,
+  presenceOf,
   useChatState,
   type ChatState,
 } from "./state/chat-store";
 import { DmHeaderActions, FriendsView, HomeSidebar, PickFriendsDialog, RenameGroupDialog } from "./ui/home";
+import { CustomStatusDialog } from "./ui/status";
+import type { StatusControl } from "./ui/shell";
 import { untilText } from "./roles";
 import { setMediaBase } from "./avatar-image";
 import { plainText } from "./markdown";
@@ -63,6 +66,7 @@ function notifyIfMentioned(state: ChatState, event: DispatchEvent, port: Platfor
   if (message.author.id === state.me.id || (!dm && !message.mentions.includes(state.me.id))) return;
   if (state.focused && state.activeChannelId === message.channelId) return;
   if (state.relationships[message.author.id]?.type === "blocked") return;
+  if (state.settings.status === "dnd") return; // não perturbe: só o selo continua
   play("mention");
   if (!port) return;
   if (settings.notifications.flash) port.requestAttention().catch(() => undefined);
@@ -172,6 +176,7 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
       onReady: (user, guilds, readStates, extra) => {
         for (const read of readStates ?? []) ackedRef.current.set(read.channelId, read.lastReadId);
         store.dispatch({ type: "ready", user, guilds, readStates, ...extra });
+        idleRef.current = false; // conexão nova começa "em uso"; o relógio abaixo corrige em segundos
         // Reconectou com a voz ligada: o servidor perdeu o estado junto com a conexão antiga.
         const current = voiceRef.current;
         if (current) {
@@ -216,6 +221,23 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
       gatewayRef.current = null;
     };
   }, [session, store, onLogout, playSound]);
+
+  // ---- ausente automático: sem mexer no computador por X minutos ----
+  const idleRef = useRef(false);
+  useEffect(() => {
+    const check = async () => {
+      const port = portRef.current;
+      const minutes = settingsStore.get().presence.idleMinutes;
+      if (!port) return;
+      const seconds = await port.getIdleSeconds().catch(() => 0);
+      const idle = minutes > 0 && seconds >= minutes * 60;
+      if (idle === idleRef.current) return;
+      idleRef.current = idle;
+      gatewayRef.current?.sendIdle(idle);
+    };
+    const timer = window.setInterval(() => void check(), 15_000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Saiu da conta / fechou: desliga a voz.
   useEffect(() => () => void engineRef.current?.leave(), []);
@@ -339,6 +361,7 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
 
   // ---- conversas diretas e amigos ----
   const [homeDialog, setHomeDialog] = useState<"newGroup" | "addPeople" | "rename" | null>(null);
+  const [customStatusOpen, setCustomStatusOpen] = useState(false);
   /** Abre (ou cria) a conversa com essa pessoa e vai para ela. */
   const openDmWith = async (userIds: Id[], name?: string) => {
     try {
@@ -631,7 +654,6 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
     : [];
   const relationships = Object.values(state.relationships);
   const friends = relationships.filter((r) => r.type === "friend").map((r) => r.user);
-  const isOnline = (userId: Id) => state.relationships[userId]?.online ?? Object.values(state.members).some((g) => g[userId]?.online);
   const otherBlocked = activeDm?.type === "dm" && activeDm.recipients[0] ? isBlocked(state, activeDm.recipients[0].id) : false;
 
   /** O painel de conversa, para canal de servidor ou conversa direta. */
@@ -708,7 +730,19 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
       }}
     />
   );
-  const statusText = state.status === "ready" ? (platform?.kind === "tauri" ? `Online · v${platform.appVersion}` : "Online") : "Reconectando…";
+  const statusText = state.status === "ready" ? (platform?.kind === "tauri" ? `Conectado · v${platform.appVersion}` : "Conectado") : "Reconectando…";
+  const myStatus = state.settings.status ?? "online";
+  const saveSettings = (changes: Parameters<typeof api.updateUserSettings>[0]) =>
+    api.updateUserSettings(changes).then((settings) => store.dispatch({ type: "settings", settings: { ...state.settings, ...settings } }));
+  const statusControl: StatusControl = {
+    status: myStatus,
+    customStatus: state.settings.customStatus ?? null,
+    // como os outros me veem (o servidor me manda a minha própria presença); invisível = offline
+    presence: myStatus === "invisible" ? "offline" : presenceOf(state, me.id).status === "offline" ? (myStatus === "idle" ? "idle" : myStatus === "dnd" ? "dnd" : "online") : presenceOf(state, me.id).status,
+    onStatus: (status) => void saveSettings({ status }).catch(() => setChatNotice("Não foi possível mudar o status. Confira a conexão e tente de novo.")),
+    onEditCustom: () => setCustomStatusOpen(true),
+    onClearCustom: () => void saveSettings({ customStatus: null }).catch(() => setChatNotice("Não foi possível limpar o status. Tente de novo.")),
+  };
   const channelsOf = (type: ChannelType) =>
     guild ? guild.channelIds.map((id) => state.channels[id]).filter((c): c is Channel => c !== undefined && c.type === type) : [];
 
@@ -747,7 +781,7 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
             pendingCount={relationships.filter((r) => r.type === "incoming").length}
             mentions={channelMentions}
             unread={unreadChannels}
-            isOnline={isOnline}
+            presenceOf={(userId) => presenceOf(state, userId).status}
             onFriends={() => {
               setActiveDmId(null);
               setDrawerOpen(false);
@@ -758,7 +792,7 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
             }}
             onCloseDm={(dm) => void closeDm(dm)}
             onNewGroup={() => setHomeDialog("newGroup")}
-            footer={<UserPanel me={me} online={state.status === "ready"} statusText={statusText} onOpenSettings={() => setSettingsOpen("account")} />}
+            footer={<UserPanel me={me} online={state.status === "ready"} statusText={statusText} onOpenSettings={() => setSettingsOpen("account")} statusControl={statusControl} />}
           />
           {activeDm
             ? renderChat(
@@ -798,6 +832,7 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
             me={me}
             online={state.status === "ready"}
             statusText={statusText}
+            statusControl={statusControl}
             membersById={membersById}
             voiceStates={state.voice[guild.id] ?? {}}
             speaking={speaking}
@@ -889,6 +924,13 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
             for (const id of ids) await api.addToGroupDm(activeDm.id, id);
           }}
           onClose={() => setHomeDialog(null)}
+        />
+      )}
+      {customStatusOpen && (
+        <CustomStatusDialog
+          current={state.settings.customStatus ?? null}
+          onSave={(customStatus) => saveSettings({ customStatus }).catch((error: unknown) => Promise.reject(new Error(error instanceof ApiError ? error.message : "Não foi possível salvar o status. Tente de novo.")))}
+          onClose={() => setCustomStatusOpen(false)}
         />
       )}
       {homeDialog === "rename" && activeDm && <RenameGroupDialog dm={activeDm} onRename={(name) => api.renameGroupDm(activeDm.id, name).then(() => undefined)} onClose={() => setHomeDialog(null)} />}

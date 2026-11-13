@@ -155,8 +155,9 @@ describe("servidor 1.0 (REST + gateway)", () => {
 
   it("presença: quando bob sai, alice recebe offline", async () => {
     bobWs.close();
-    const presence = await aliceWs.event("PRESENCE_UPDATE");
-    expect(presence.d).toEqual({ userId: bob.user.id, online: false });
+    // (1.10: a própria pessoa também recebe a sua presença, para os outros aparelhos dela)
+    const presence = await aliceWs.next((f) => f.op === "dispatch" && f.t === "PRESENCE_UPDATE" && f.d.userId === bob.user.id && !f.d.online);
+    expect(presence).toMatchObject({ d: { userId: bob.user.id, online: false, status: "offline", customStatus: null } });
   });
 
   it("logout invalida o token e derruba a conexão", async () => {

@@ -6,6 +6,9 @@ describe("preferências deste aparelho", () => {
   it("sem nada salvo (ou lixo), tudo volta ao padrão", () => {
     expect(sanitizeSettings(null)).toEqual(DEFAULT_SETTINGS);
     expect(sanitizeSettings("texto")).toEqual(DEFAULT_SETTINGS);
+    expect(sanitizeSettings({ presence: { idleMinutes: 15 } }).presence.idleMinutes).toBe(15);
+    expect(sanitizeSettings({ presence: { idleMinutes: 7 } }).presence.idleMinutes).toBe(10); // fora da lista: padrão
+    expect(sanitizeSettings({ presence: { idleMinutes: 0 } }).presence.idleMinutes).toBe(0); // nunca
     expect(loadSettings({ getItem: () => "{json quebrado" })).toEqual(DEFAULT_SETTINGS);
     expect(loadSettings({ getItem: () => { throw new Error("bloqueado"); } })).toEqual(DEFAULT_SETTINGS);
   });

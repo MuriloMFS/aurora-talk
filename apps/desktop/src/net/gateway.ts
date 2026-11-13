@@ -64,6 +64,11 @@ export class GatewayClient {
     this.send({ op: "voice_leave" });
   }
 
+  /** Parei (ou voltei a) mexer no computador: "ausente" para os outros. */
+  sendIdle(idle: boolean): void {
+    this.send({ op: "idle", idle });
+  }
+
   private send(frame: ClientFrame): void {
     if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(frame));
   }

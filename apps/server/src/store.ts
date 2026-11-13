@@ -16,6 +16,9 @@ import {
   type Ban,
   type Channel,
   type ChannelType,
+  type CustomStatus,
+  type PresenceStatus,
+  type UserStatus,
   type DmChannel,
   type DmPolicy,
   type Relationship,
@@ -234,7 +237,10 @@ const MESSAGE_SELECT = `SELECT m.id, m.channel_id, m.author_id, m.content, m.cre
 
 /** Estado em memória (do gateway) que entra nos objetos de servidor: presença e voz. */
 export interface LiveState {
+  /** Aparece online (conectado e não invisível). */
   isOnline(userId: Id): boolean;
+  /** Como os outros veem a pessoa agora (invisível = offline; o personalizado só para quem aparece). */
+  presenceOf(userId: Id): { status: PresenceStatus; customStatus: CustomStatus | null };
   voiceStatesOf(guildId: Id): VoiceState[];
 }
 
@@ -273,6 +279,11 @@ export class Store {
     const userColumns = this.all<{ name: string }>("PRAGMA table_info(users)").map((c) => c.name);
     if (!userColumns.includes("avatar_id")) this.db.exec("ALTER TABLE users ADD COLUMN avatar_id INTEGER");
     if (!userColumns.includes("dm_policy")) this.db.exec("ALTER TABLE users ADD COLUMN dm_policy TEXT NOT NULL DEFAULT 'servers'");
+    // 1.10: status escolhido e status personalizado
+    if (!userColumns.includes("status")) this.db.exec("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'online'");
+    for (const column of ["custom_text TEXT", "custom_emoji TEXT", "custom_expires INTEGER"]) {
+      if (!userColumns.includes(column.split(" ")[0]!)) this.db.exec(`ALTER TABLE users ADD COLUMN ${column}`);
+    }
     const messageColumns = this.all<{ name: string }>("PRAGMA table_info(messages)").map((c) => c.name);
     if (!messageColumns.includes("reply_to_id")) this.db.exec("ALTER TABLE messages ADD COLUMN reply_to_id INTEGER");
     // 1.5: todo servidor ganha o cargo @todos com as permissões padrão
@@ -505,13 +516,18 @@ export class Store {
        LEFT JOIN moderation mo ON mo.guild_id = m.guild_id AND mo.user_id = m.user_id
        WHERE m.guild_id = ? ORDER BY m.joined_at`,
       row.id,
-    ).map((r): Member => ({
-      user: toUser(r),
-      joinedAt: r.joined_at,
-      online: live.isOnline(String(r.id)),
-      roles: [],
-      timeoutUntil: r.timeout_until !== null && r.timeout_until > now ? r.timeout_until : null,
-    }));
+    ).map((r): Member => {
+      const presence = live.presenceOf(String(r.id));
+      return {
+        user: toUser(r),
+        joinedAt: r.joined_at,
+        online: presence.status !== "offline",
+        roles: [],
+        timeoutUntil: r.timeout_until !== null && r.timeout_until > now ? r.timeout_until : null,
+        status: presence.status,
+        customStatus: presence.customStatus,
+      };
+    });
     const byUser = new Map(members.map((m) => [m.user.id, m]));
     for (const r of this.all<{ user_id: number; role_id: number }>("SELECT user_id, role_id FROM member_roles WHERE guild_id = ?", row.id)) {
       byUser.get(String(r.user_id))?.roles.push(String(r.role_id));
@@ -863,11 +879,14 @@ export class Store {
     return (this.one<{ type: RelationshipType }>("SELECT type FROM relationships WHERE user_id = ? AND target_id = ?", Number(userId), Number(targetId))?.type ?? null);
   }
 
-  relationshipsOf(userId: Id, live: Pick<LiveState, "isOnline">): Relationship[] {
+  relationshipsOf(userId: Id, live: Pick<LiveState, "isOnline" | "presenceOf">): Relationship[] {
     return this.all<UserRow & { type: RelationshipType; since: number }>(
       `SELECT ${USER_COLUMNS}, r.type, r.since FROM relationships r JOIN users u ON u.id = r.target_id WHERE r.user_id = ? ORDER BY u.display_name`,
       Number(userId),
-    ).map((r) => ({ user: toUser(r), type: r.type, since: r.since, online: r.type !== "blocked" && live.isOnline(String(r.id)) }));
+    ).map((r) => {
+      const presence = r.type === "blocked" ? { status: "offline" as const, customStatus: null } : live.presenceOf(String(r.id));
+      return { user: toUser(r), type: r.type, since: r.since, online: presence.status !== "offline", status: presence.status, customStatus: presence.customStatus };
+    });
   }
 
   /** Grava (ou apaga, com `null`) a minha relação com `targetId`. */
@@ -903,6 +922,38 @@ export class Store {
 
   setDmPolicy(userId: Id, policy: DmPolicy): void {
     this.run("UPDATE users SET dm_policy = ? WHERE id = ?", policy, Number(userId));
+  }
+
+  /* ---------- status ---------- */
+
+  statusOf(userId: Id): UserStatus {
+    const status = this.one<{ status: string }>("SELECT status FROM users WHERE id = ?", Number(userId))?.status;
+    return status === "idle" || status === "dnd" || status === "invisible" ? status : "online";
+  }
+
+  setStatus(userId: Id, status: UserStatus): void {
+    this.run("UPDATE users SET status = ? WHERE id = ?", status, Number(userId));
+  }
+
+  /** Status personalizado que ainda vale (o vencido conta como nenhum). */
+  customStatusOf(userId: Id, now = Date.now()): CustomStatus | null {
+    const r = this.one<{ custom_text: string | null; custom_emoji: string | null; custom_expires: number | null }>(
+      "SELECT custom_text, custom_emoji, custom_expires FROM users WHERE id = ?",
+      Number(userId),
+    );
+    if (!r || (!r.custom_text && !r.custom_emoji)) return null;
+    if (r.custom_expires !== null && r.custom_expires <= now) return null;
+    return { text: r.custom_text ?? "", emoji: r.custom_emoji, expiresAt: r.custom_expires };
+  }
+
+  setCustomStatus(userId: Id, custom: CustomStatus | null): void {
+    this.run(
+      "UPDATE users SET custom_text = ?, custom_emoji = ?, custom_expires = ? WHERE id = ?",
+      custom?.text || null,
+      custom?.emoji ?? null,
+      custom?.expiresAt ?? null,
+      Number(userId),
+    );
   }
 
   /* ---------- conversas diretas ---------- */
@@ -1031,7 +1082,8 @@ export class Store {
   addMember(guildId: Id, user: User, live: LiveState): Member {
     const joinedAt = Date.now();
     this.run("INSERT INTO members (guild_id, user_id, joined_at) VALUES (?, ?, ?)", Number(guildId), Number(user.id), joinedAt);
-    return { user, joinedAt, online: live.isOnline(user.id), roles: [], timeoutUntil: this.timeoutOf(guildId, user.id) };
+    const presence = live.presenceOf(user.id);
+    return { user, joinedAt, online: presence.status !== "offline", roles: [], timeoutUntil: this.timeoutOf(guildId, user.id), status: presence.status, customStatus: presence.customStatus };
   }
 
   getChannel(channelId: Id): Channel | undefined {

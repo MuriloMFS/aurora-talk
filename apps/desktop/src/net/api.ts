@@ -1,4 +1,4 @@
-import type { ApiErrorBody, Attachment, DmChannel, DmPolicy, Relationship, AuditLogEntry, AuthResponse, Ban, Channel, ChannelType, Guild, Id, Invite, InviteDetails, Message, Overwrite, Role, User, VoiceToken } from "@aurora/schema";
+import type { ApiErrorBody, Attachment, DmChannel, Relationship, UserSettings, AuditLogEntry, AuthResponse, Ban, Channel, ChannelType, Guild, Id, Invite, InviteDetails, Message, Overwrite, Role, User, VoiceToken } from "@aurora/schema";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -232,8 +232,9 @@ export class ApiClient {
   removeRelationship(userId: Id) {
     return this.request<void>("DELETE", `/api/users/@me/relationships/${userId}`);
   }
-  updateUserSettings(dmPolicy: DmPolicy) {
-    return this.request<{ dmPolicy: DmPolicy }>("PATCH", "/api/users/@me/settings", { dmPolicy });
+  /** Mensagens diretas, status e status personalizado (só o que vier é mudado). */
+  updateUserSettings(changes: Partial<UserSettings>) {
+    return this.request<UserSettings>("PATCH", "/api/users/@me/settings", changes);
   }
   /** 1 pessoa = conversa a dois; mais = grupo novo. */
   openDm(recipientIds: Id[], name?: string) {
