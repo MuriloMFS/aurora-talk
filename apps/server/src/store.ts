@@ -148,7 +148,7 @@ const dmKeyOf = (a: Id, b: Id) => [a, b].sort((x, y) => Number(x) - Number(y)).j
 export interface StoredFile {
   id: Id;
   ownerId: Id | null;
-  kind: "avatar" | "attachment";
+  kind: "avatar" | "attachment" | "guild_icon" | "guild_banner";
   contentType: string;
   size: number;
   sha256: string;
@@ -161,7 +161,7 @@ export interface StoredFile {
   height?: number | null;
 }
 interface FileRow {
-  id: number; owner_id: number | null; kind: "avatar" | "attachment"; content_type: string; size: number; sha256: string; created_at: number;
+  id: number; owner_id: number | null; kind: "avatar" | "attachment" | "guild_icon" | "guild_banner"; content_type: string; size: number; sha256: string; created_at: number;
   filename: string | null; channel_id: number | null; message_id: number | null; width: number | null; height: number | null;
 }
 const FILE_COLUMNS = "id, owner_id, kind, content_type, size, sha256, created_at, filename, channel_id, message_id, width, height";
@@ -181,7 +181,7 @@ const toFile = (r: FileRow): StoredFile => ({
   height: r.height,
 });
 interface ChannelRow { id: number; guild_id: number; name: string; position: number; type: ChannelType }
-interface GuildRow { id: number; name: string; owner_id: number }
+interface GuildRow { id: number; name: string; owner_id: number; icon_id: number | null; banner_id: number | null; created_at: number }
 interface MemberRow extends UserRow { joined_at: number }
 interface RoleRow { id: number; guild_id: number; name: string; color: number | null; position: number; permissions: number; hoist: number }
 interface OverwriteRow { channel_id: number; target_type: string; target_id: number; allow: number; deny: number }
@@ -280,6 +280,10 @@ export class Store {
       if (!fileColumns.includes(column)) this.db.exec(`ALTER TABLE files ADD COLUMN ${column} ${type}`);
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS files_by_message ON files(message_id)");
+    // 1.13: imagem do servidor
+    const guildColumns = this.all<{ name: string }>("PRAGMA table_info(guilds)").map((c) => c.name);
+    if (!guildColumns.includes("icon_id")) this.db.exec("ALTER TABLE guilds ADD COLUMN icon_id INTEGER");
+    if (!guildColumns.includes("banner_id")) this.db.exec("ALTER TABLE guilds ADD COLUMN banner_id INTEGER");
     const userColumns = this.all<{ name: string }>("PRAGMA table_info(users)").map((c) => c.name);
     if (!userColumns.includes("avatar_id")) this.db.exec("ALTER TABLE users ADD COLUMN avatar_id INTEGER");
     if (!userColumns.includes("dm_policy")) this.db.exec("ALTER TABLE users ADD COLUMN dm_policy TEXT NOT NULL DEFAULT 'servers'");
@@ -580,7 +584,7 @@ export class Store {
    * Sem `viewerId`, tudo (uso interno).
    */
   getGuild(guildId: Id, live: LiveState, viewerId?: Id): Guild | undefined {
-    const row = this.one<GuildRow>("SELECT id, name, owner_id FROM guilds WHERE id = ?", Number(guildId));
+    const row = this.one<GuildRow>("SELECT id, name, owner_id, icon_id, banner_id, created_at FROM guilds WHERE id = ?", Number(guildId));
     if (!row) return undefined;
     const id = String(row.id);
     const now = Date.now();
@@ -615,7 +619,7 @@ export class Store {
       const visible = new Set(channels.map((c) => c.id));
       voiceStates = voiceStates.filter((v) => visible.has(v.channelId));
     }
-    return { id, name: row.name, ownerId: String(row.owner_id), channels, members, voiceStates, roles };
+    return { id, name: row.name, icon: avatarOf(row.icon_id), banner: avatarOf(row.banner_id), createdAt: row.created_at, ownerId: String(row.owner_id), channels, members, voiceStates, roles };
   }
 
   /** Canais do servidor com as sobrescritas (ordem de exibição). */
@@ -646,6 +650,19 @@ export class Store {
   }
 
   /** Apaga o servidor e tudo dele (canais, mensagens, cargos, convites…), por cascata. Devolve quem era membro. */
+  /** Troca a imagem ou a capa do servidor (ou tira, com `null`). Devolve a anterior, para apagar o arquivo. */
+  setGuildImage(guildId: Id, which: "icon" | "banner", fileId: Id | null): Id | null {
+    const column = which === "icon" ? "icon_id" : "banner_id";
+    const previous = this.one<Record<string, number | null>>(`SELECT ${column} AS v FROM guilds WHERE id = ?`, Number(guildId))?.v ?? null;
+    this.run(`UPDATE guilds SET ${column} = ? WHERE id = ?`, fileId === null ? null : Number(fileId), Number(guildId));
+    return avatarOf(previous);
+  }
+
+  guildImages(guildId: Id): { icon: Id | null; banner: Id | null } {
+    const r = this.one<{ icon_id: number | null; banner_id: number | null }>("SELECT icon_id, banner_id FROM guilds WHERE id = ?", Number(guildId));
+    return { icon: avatarOf(r?.icon_id ?? null), banner: avatarOf(r?.banner_id ?? null) };
+  }
+
   deleteGuild(guildId: Id): Id[] {
     const members = this.memberIds(guildId);
     this.run("DELETE FROM guilds WHERE id = ?", Number(guildId));
@@ -1367,7 +1384,7 @@ export class Store {
            FROM channels c
            JOIN members mb ON mb.guild_id = c.guild_id AND mb.user_id = ?
            LEFT JOIN read_states rs ON rs.channel_id = c.id AND rs.user_id = ?
-          WHERE c.type = 'text'
+          WHERE c.type IN ('text', 'voice')
          UNION ALL
          SELECT c.id, COALESCE(rs.last_read_id, MAX(cr.joined_at - ?, 0) * ?), 1
            FROM channels c

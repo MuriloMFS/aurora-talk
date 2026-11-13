@@ -288,6 +288,186 @@
   font-size: var(--text-sm);
 }
 
+/* ---------- imagem do servidor ---------- */
+.guild-icon-picker {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+}
+.guild-icon-picker__tile {
+  position: relative;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: var(--avatar-xl);
+  height: var(--avatar-xl);
+  padding: 0;
+  border: var(--border-width) dashed var(--border-strong);
+  border-radius: var(--radius-xl);
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+}
+.guild-icon-picker__tile img {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+}
+.guild-icon-picker__tile:focus-visible {
+  outline: var(--ring-width) solid var(--focus-ring);
+  outline-offset: var(--ring-offset);
+}
+.guild-icon-picker__tile:disabled {
+  cursor: default;
+}
+.guild-icon-picker__badge {
+  position: absolute;
+  top: calc(-1 * var(--space-2));
+  right: calc(-1 * var(--space-2));
+  display: grid;
+  place-items: center;
+  width: var(--space-7);
+  height: var(--space-7);
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.guild-icon-picker__tile:disabled .guild-icon-picker__badge {
+  display: none;
+}
+.guild-icon-picker__text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.guild-icon-picker__hint {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+/* ---------- capa do servidor ---------- */
+.guild-banner-picker {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+.guild-banner-picker__frame {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: min(100%, calc(var(--sidebar-width) * 2));
+  aspect-ratio: 16 / 9;
+  padding: 0;
+  overflow: hidden;
+  border: var(--border-width) dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+.guild-banner-picker__frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.guild-banner-picker__frame:disabled {
+  cursor: default;
+}
+.guild-banner-picker__frame:focus-visible {
+  outline: var(--ring-width) solid var(--focus-ring);
+  outline-offset: var(--ring-offset);
+}
+.guild-banner-picker__cta {
+  position: absolute;
+  right: var(--space-3);
+  bottom: var(--space-3);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+}
+
+/* ---------- cartão do servidor ---------- */
+.guild-card {
+  --presence-surface: var(--bg-elevated);
+  width: min(100%, calc(var(--sidebar-width) + var(--space-10)));
+  overflow: hidden;
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+}
+.guild-card__banner {
+  aspect-ratio: 16 / 7;
+  background: var(--brand-gradient);
+}
+.guild-card__banner img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.guild-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: 0 var(--space-5) var(--space-5);
+}
+.guild-card__icon {
+  display: grid;
+  place-items: center;
+  width: var(--avatar-xl);
+  height: var(--avatar-xl);
+  margin-top: calc(var(--avatar-xl) / -2);
+  margin-bottom: var(--space-3);
+  overflow: hidden;
+  border-radius: var(--radius-xl);
+  background: var(--bg-hover);
+  box-shadow: 0 0 0 var(--space-2) var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
+}
+.guild-card__icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.guild-card__name {
+  font-size: var(--text-lg);
+  line-height: var(--leading-lg);
+}
+.guild-card__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+.guild-card__stat {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.guild-card__dot {
+  position: static;
+  box-shadow: none;
+}
+.guild-card__since {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
 /* ---------- chat sem permissão para enviar ---------- */
 .composer-blocked {
   margin: 0 var(--space-5) var(--space-5);

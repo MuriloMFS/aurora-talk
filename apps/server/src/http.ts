@@ -64,7 +64,7 @@ import { nextId } from "./ids.ts";
 import type { IceServerSource } from "./turn.ts";
 import { registerUpdateRoutes } from "./updates.ts";
 
-export const SERVER_VERSION = "1.11.0";
+export const SERVER_VERSION = "1.13.0";
 
 export class HttpError extends Error {
   readonly status: number;
@@ -687,7 +687,7 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
   // Fotos de perfil são públicas (como em qualquer app de chat). O id nunca muda de conteúdo: cache longo.
   app.get<{ Params: { fileId: string } }>("/api/files/:fileId", async (request, reply) => {
     const file = isValidId(request.params.fileId) ? store.getFile(request.params.fileId) : undefined;
-    if (!file || file.kind !== "avatar") throw new HttpError(404, "not_found", "Arquivo não encontrado.");
+    if (!file || file.kind === "attachment") throw new HttpError(404, "not_found", "Arquivo não encontrado.");
     const bytes = await files.read(file.id).catch(() => null);
     if (!bytes) throw new HttpError(404, "not_found", "Arquivo não encontrado.");
     return reply
@@ -959,10 +959,51 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     if (name !== before) {
       store.renameGuild(guildId, name);
       store.audit(guildId, user.id, "guild_update", name, `nome: ${before} → ${name}`);
-      gateway.dispatchToGuild(guildId, { t: "GUILD_UPDATE", d: { id: guildId, name } });
+      gateway.dispatchToGuild(guildId, { t: "GUILD_UPDATE", d: { id: guildId, name, ...store.guildImages(guildId) } });
     }
-    return { id: guildId, name };
+    return { id: guildId, name, ...store.guildImages(guildId) };
   });
+
+  // Imagem e capa do servidor: o app manda já recortadas e reduzidas (como a foto de perfil).
+  const GUILD_IMAGE = {
+    icon: { kind: "guild_icon", added: "imagem nova", removed: "imagem removida" },
+    banner: { kind: "guild_banner", added: "capa nova", removed: "capa removida" },
+  } as const;
+  const replaceGuildImage = async (guildId: Id, userId: Id, which: "icon" | "banner", fileId: Id | null) => {
+    const previous = store.setGuildImage(guildId, which, fileId);
+    if (previous) {
+      store.deleteFile(previous);
+      await files.remove(previous);
+    }
+    const name = store.guildName(guildId)!;
+    store.audit(guildId, userId, "guild_update", name, fileId ? GUILD_IMAGE[which].added : GUILD_IMAGE[which].removed);
+    const result = { id: guildId, name, ...store.guildImages(guildId) };
+    gateway.dispatchToGuild(guildId, { t: "GUILD_UPDATE", d: result });
+    return result;
+  };
+  for (const which of ["icon", "banner"] as const) {
+    app.put<GuildParams>(`/api/guilds/:guildId/${which}`, { bodyLimit: LIMITS.avatarMaxBytes }, async (request) => {
+      const { user } = authenticate(request);
+      limit(actionLimiter, `action:${user.id}`);
+      const guildId = memberGuildId(request.params.guildId, user.id);
+      requirePermission(guildId, user.id, "MANAGE_GUILD");
+      const bytes = request.body;
+      if (!Buffer.isBuffer(bytes) || bytes.length === 0) throw new HttpError(400, "invalid_request", "Envie a imagem.");
+      const contentType = detectImageType(bytes);
+      if (!contentType) throw new HttpError(415, "unsupported_type", "Esse arquivo não é uma imagem PNG, JPEG, WebP ou GIF.");
+      const id = nextId();
+      await files.write(id, bytes);
+      store.createFile({ id, ownerId: user.id, kind: GUILD_IMAGE[which].kind, contentType, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"), createdAt: Date.now() });
+      return replaceGuildImage(guildId, user.id, which, id);
+    });
+    app.delete<GuildParams>(`/api/guilds/:guildId/${which}`, async (request) => {
+      const { user } = authenticate(request);
+      limit(actionLimiter, `action:${user.id}`);
+      const guildId = memberGuildId(request.params.guildId, user.id);
+      requirePermission(guildId, user.id, "MANAGE_GUILD");
+      return replaceGuildImage(guildId, user.id, which, null);
+    });
+  }
 
   app.delete<GuildParams>("/api/guilds/:guildId", async (request, reply) => {
     const { user } = authenticate(request);
@@ -970,6 +1011,11 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     if (store.ownerOf(guildId) !== user.id) throw new HttpError(403, "owner_only", "Só o dono pode excluir o servidor.");
     for (const { userId, channelId } of gateway.voiceMembersOf(guildId)) rooms()?.removeParticipant(voiceRoom(channelId), userId).catch(() => undefined);
     gateway.forgetGuild(guildId);
+    for (const image of Object.values(store.guildImages(guildId))) {
+      if (!image) continue;
+      store.deleteFile(image);
+      await files.remove(image);
+    }
     const members = store.deleteGuild(guildId);
     gateway.dispatchToUsers(members, { t: "GUILD_DELETE", d: { id: guildId } });
     return reply.status(204).send();
@@ -1414,7 +1460,6 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
   app.get<{ Params: { channelId: string } }>("/api/channels/:channelId/messages", async (request) => {
     const { user } = authenticate(request);
     const channel = chatChannel(request.params.channelId, user.id);
-    if (channel.type !== "text") throw new HttpError(400, "invalid_request", "Canais de voz não têm mensagens.");
     const query = pageQuery.parse(request.query);
     const before = query.before && isValidId(query.before) ? query.before : null;
     return store.listMessages(channel.id, before, query.limit ?? LIMITS.pageSize);
@@ -1423,7 +1468,6 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
   app.post<{ Params: { channelId: string } }>("/api/channels/:channelId/messages", async (request, reply) => {
     const { user } = authenticate(request);
     const channel = chatChannel(request.params.channelId, user.id);
-    if (channel.type !== "text") throw new HttpError(400, "invalid_request", "Canais de voz não têm mensagens.");
     requireChannelPermission(channel, user.id, "SEND_MESSAGES");
     limit(messageLimiter, `msg:${user.id}`);
     const body = messageBody.parse(request.body);
@@ -1482,7 +1526,6 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
   app.post<{ Params: { channelId: string } }>("/api/channels/:channelId/attachments", { bodyLimit: LIMITS.attachmentMaxBytes }, async (request, reply) => {
     const { user } = authenticate(request);
     const channel = chatChannel(request.params.channelId, user.id);
-    if (channel.type !== "text") throw new HttpError(400, "invalid_request", "Canais de voz não têm mensagens.");
     requireChannelPermission(channel, user.id, "SEND_MESSAGES");
     limit(uploadLimiter, `upload:${user.id}`);
     const bytes = request.body;

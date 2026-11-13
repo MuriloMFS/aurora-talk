@@ -27,6 +27,11 @@ export const TYPING_TTL_MS = 8_000;
 export interface GuildEntry {
   id: Id;
   name: string;
+  /** Imagem do servidor (id do arquivo) ou `null`. */
+  icon: string | null;
+  /** Capa do servidor (id do arquivo) ou `null`. */
+  banner: string | null;
+  createdAt: number | null;
   ownerId: Id;
   channelIds: Id[];
   /** Do mais alto para o mais baixo; o @todos (id = id do servidor) por último. */
@@ -196,6 +201,9 @@ function withGuild(state: ChatState, guild: Guild): ChatState {
       [guild.id]: {
         id: guild.id,
         name: guild.name,
+        icon: guild.icon ?? null,
+        banner: guild.banner ?? null,
+        createdAt: guild.createdAt ?? null,
         ownerId: guild.ownerId,
         channelIds: [...guild.channels].sort((a, b) => a.position - b.position || byId(a, b)).map((c) => c.id),
         roles: [...(guild.roles ?? [])].sort(byPositionDesc),
@@ -382,7 +390,7 @@ function applyDispatch(state: ChatState, event: DispatchEvent, now: number): Cha
     }
     case "GUILD_UPDATE": {
       const guild = state.guilds[event.d.id];
-      return guild ? { ...state, guilds: { ...state.guilds, [guild.id]: { ...guild, name: event.d.name } } } : state;
+      return guild ? { ...state, guilds: { ...state.guilds, [guild.id]: { ...guild, name: event.d.name, icon: event.d.icon === undefined ? guild.icon : event.d.icon, banner: event.d.banner === undefined ? guild.banner : event.d.banner } } } : state;
     }
     case "GUILD_DELETE":
       return withoutGuild(state, event.d.id);

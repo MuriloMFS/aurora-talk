@@ -52,4 +52,15 @@ describe("cargos na interface", () => {
     expect(auditDetail({ action: "voice_move", detail: "Sala → Sala 2" })).toBe("Sala → Sala 2");
     expect(auditSentence({ actor: ana, action: "channel_permissions", targetName: "#staff", detail: "@todos: bloqueia Ver canais" })).toBe("Ana mudou as permissões do canal #staff");
   });
+
+  it("agrupar por status: online, ausente, não perturbe e offline, cada um em ordem alfabética", () => {
+    const m = (id: string, name: string, status: Member["status"]): Member => ({ user: { id, username: id, displayName: name }, joinedAt: 0, online: status !== "offline", roles: [], status });
+    const groups = memberGroups([m("1", "Zeca", "online"), m("2", "Bia", "dnd"), m("3", "Ana", "online"), m("4", "Caio", "offline"), m("5", "Davi", "idle")], [], "status");
+    expect(groups.map((g) => [g.label, g.members.map((x) => x.user.displayName)])).toEqual([
+      ["Online", ["Ana", "Zeca"]],
+      ["Ausente", ["Davi"]],
+      ["Não perturbe", ["Bia"]],
+      ["Offline", ["Caio"]],
+    ]);
+  });
 });

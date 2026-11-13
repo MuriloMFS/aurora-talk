@@ -138,6 +138,17 @@
   - 10 códigos de recuperação (uso único, mostrados uma vez): entram sem o celular e trocam a senha esquecida ("Esqueci a senha" na tela de login), desconectando todos os aparelhos.
   - Aparelhos conectados: nome, quando entrou e último uso; desconectar um ou todos os outros (cai na hora).
   - Sem e-mail por enquanto: a recuperação depende dos códigos.
+- **1.11.1** — mesma 1.11.0, gerada de novo: a 1.11.0 passou a ser acusada pelo Defender (falso positivo) meia hora depois de publicada. A conferência do `pnpm release` ficou mais rígida ([06](06-atualizacoes.md)).
+- **1.12.0** — **visual novo e instalação que já abre o app**:
+  - Paleta nova: cinzas neutros (sem puxar para o azul) e destaque rosa "pôr do sol", com texto branco nos botões; laranja → rosa → roxo só na marca e no ícone. Contraste conferido nos dois temas (guia visual §3).
+  - Mais compacto: mensagens mais juntas, canais mais finos (seleção por fundo, sem barra lateral), categorias de canais que recolhem (lembradas por servidor), lista de membros e barra de servidores mais justas.
+  - Instalador: ao terminar, cria o atalho, abre o Aurora e fecha sozinho (sem a tela de "Concluir"). A atualização automática continua reabrindo o app como antes.
+- **1.13.0** — **servidores mais completos**:
+  - Imagem e capa do servidor (escolhidas ao criar ou em Configurações → Visão geral, cortadas e reduzidas no app). A imagem aparece na barra de servidores, a capa no topo da lista de canais e no cartão do servidor (online, membros, desde quando).
+  - Clicar numa pessoa (lista de membros ou mensagem) abre um menu: perfil, mencionar, mensagem, amizade, bloquear e, conforme o seu cargo, dar/tirar cargos, castigar, expulsar e banir.
+  - O nome do servidor virou menu (convidar, configurações, criar canal, sair). Nos canais, ao passar o mouse: convidar e editar o canal; nas salas de voz, abrir o chat da sala (as salas de voz agora têm chat).
+  - Busca de pessoas na barra do topo.
+  - Lista de membros agrupada por cargo ou por status (Online, Ausente, Não perturbe, Offline).
 
 ## O que fica para depois (ordem sugerida)
 escolha de microfone/fone · DMs e amigos · anexos e prévia de links · cargos e permissões (pacote `permissions` do doc 03) · lista virtualizada para canais grandes · servidor hospedado (VPS) com HTTPS · depois, o restante do roadmap.

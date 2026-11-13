@@ -123,6 +123,12 @@ export interface UserSettings {
 export interface Guild {
   id: Id;
   name: string;
+  /** Imagem do servidor (id do arquivo, `GET /api/files/:id`); `null`/ausente = iniciais. */
+  icon?: string | null;
+  /** Capa do servidor (16:9, id do arquivo); `null`/ausente = sem capa. */
+  banner?: string | null;
+  /** Quando o servidor foi criado (ms). */
+  createdAt?: number;
   ownerId: Id;
   channels: Channel[];
   members: Member[];
@@ -291,6 +297,9 @@ export const LIMITS = {
   /** Foto de perfil já recortada e reduzida pelo app (256 px); o limite é folgado. */
   avatarMaxBytes: 2 * 1024 * 1024,
   avatarSize: 256,
+  /** Capa do servidor, já cortada em 16:9 e reduzida pelo app. */
+  bannerWidth: 960,
+  bannerHeight: 540,
   /** Anexos: por arquivo e por mensagem. */
   attachmentMaxBytes: 25 * 1024 * 1024,
   attachmentsPerMessage: 10,
@@ -382,7 +391,7 @@ export type DispatchEvent =
   | { t: "READ_STATE_UPDATE"; d: { channelId: Id; lastReadId: Id } }
   /** Alguém (inclusive eu, em outro aparelho) mudou o nome de exibição. */
   | { t: "USER_UPDATE"; d: User }
-  | { t: "GUILD_UPDATE"; d: { id: Id; name: string } }
+  | { t: "GUILD_UPDATE"; d: { id: Id; name: string; icon?: string | null; banner?: string | null } }
   /** O servidor foi excluído, ou eu saí, fui expulso ou banido: some da minha lista. */
   | { t: "GUILD_DELETE"; d: { id: Id } }
   /** Lista completa de cargos depois de criar, editar, ordenar ou excluir. */

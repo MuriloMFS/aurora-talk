@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode, type RefObject } from "react";
-import { ArrowDown, AtSign, CornerUpRight, EyeOff, FaceSlightlySmilingPlus, Hash, Menu, Pencil, Plus, Reply, SendHorizontal, Trash, Upload, Users, WifiOff, X } from "lucide-react";
+import { ArrowDown, AtSign, Volume2, CornerUpRight, EyeOff, FaceSlightlySmilingPlus, Hash, Menu, Pencil, Plus, Reply, SendHorizontal, Trash, Upload, Users, WifiOff, X } from "lucide-react";
 import { LIMITS, type Channel, type Id, type Member, type Message, type User } from "@aurora/schema";
 import { ApiError } from "../net/api";
 import type { ConnectionStatus } from "../net/gateway";
@@ -11,6 +11,9 @@ import { EmojiPicker } from "./EmojiPicker";
 import { MessageContent } from "./MessageContent";
 import { Avatar, ICON, ICON_SM } from "./shell";
 import { MessageAttachments, UploadQueue, useUploads, type UploadFn } from "./Attachments";
+import { MENTION_EVENT } from "./UserMenu";
+import { MemberSearch } from "./MemberSearch";
+import { anchorOf } from "./anchor";
 
 const errorText = (error: unknown) => (error instanceof ApiError ? error.message : "Algo deu errado. Tente de novo.");
 const BOTTOM_THRESHOLD_PX = 64;
@@ -55,6 +58,10 @@ interface ChatPaneProps {
   dm?: { title: string; group: boolean };
   /** Mensagens de quem eu bloqueei ficam recolhidas. */
   isBlocked?: (userId: Id) => boolean;
+  /** Clique no nome ou na foto de quem escreveu: menu da pessoa. */
+  onOpenUser?: (user: User, at: { x: number; y: number }) => void;
+  /** Texto da busca de pessoas no topo (ex.: "Buscar em Turma"); sem isto, sem busca. */
+  searchPlaceholder?: string;
 }
 
 /** O que as mensagens precisam saber sobre pessoas e ações (evita repassar 10 props). */
@@ -73,6 +80,7 @@ interface MessageContext {
   onJumpTo: (messageId: Id) => void;
   onOpenLink: (url: string) => void;
   isBlocked: (userId: Id) => boolean;
+  onOpenUser?: (user: User, at: { x: number; y: number }) => void;
 }
 
 export function ChatPane(props: ChatPaneProps) {
@@ -168,6 +176,7 @@ export function ChatPane(props: ChatPaneProps) {
     onReact: props.onReact,
     onOpenLink: props.onOpenLink,
     isBlocked: props.isBlocked ?? (() => false),
+    onOpenUser: props.onOpenUser,
     onReply: (message) => {
       setReplyingTo(message);
       composerRef.current?.focus();
@@ -216,12 +225,13 @@ export function ChatPane(props: ChatPaneProps) {
         <button type="button" className="icon-button chat__menu" aria-label="Abrir canais" onClick={props.onOpenDrawer}>
           <Menu {...ICON} />
         </button>
-        {props.dm ? (props.dm.group ? <Users {...ICON} className="chat__icon" /> : <AtSign {...ICON} className="chat__icon" />) : <Hash {...ICON} className="chat__icon" />}
+        {props.dm ? (props.dm.group ? <Users {...ICON} className="chat__icon" /> : <AtSign {...ICON} className="chat__icon" />) : channel.type === "voice" ? <Volume2 {...ICON} className="chat__icon" /> : <Hash {...ICON} className="chat__icon" />}
         <h2 id="chat-title" className="chat__title">
           {props.dm ? props.dm.title : channel.name}
         </h2>
         <div className="chat__tools">
           {props.headerExtra}
+          {props.searchPlaceholder && props.onOpenUser && <MemberSearch members={members} placeholder={props.searchPlaceholder} onPick={props.onOpenUser} />}
           <button
             type="button"
             className="icon-button"
@@ -287,9 +297,9 @@ export function ChatPane(props: ChatPaneProps) {
             ) : (
               <div className="empty">
                 <div className="empty__art" aria-hidden="true">
-                  {props.dm ? props.dm.group ? <Users size={32} strokeWidth={1.75} /> : <AtSign size={32} strokeWidth={1.75} /> : <Hash size={32} strokeWidth={1.75} />}
+                  {props.dm ? props.dm.group ? <Users size={32} strokeWidth={1.75} /> : <AtSign size={32} strokeWidth={1.75} /> : channel.type === "voice" ? <Volume2 size={32} strokeWidth={1.75} /> : <Hash size={32} strokeWidth={1.75} />}
                 </div>
-                <h3 className="empty__title">{props.dm ? (props.dm.group ? `Este é o começo do grupo ${props.dm.title}` : `Este é o começo da conversa com ${props.dm.title}`) : `Este é o começo de #${channel.name}`}</h3>
+                <h3 className="empty__title">{props.dm ? (props.dm.group ? `Este é o começo do grupo ${props.dm.title}` : `Este é o começo da conversa com ${props.dm.title}`) : channel.type === "voice" ? `Este é o começo do chat de ${channel.name}` : `Este é o começo de #${channel.name}`}</h3>
                 <p className="empty__text">{items.length === 0 ? "Ainda não há mensagens aqui. Escreva a primeira." : "Não há mensagens mais antigas."}</p>
               </div>
             )}
@@ -311,7 +321,7 @@ export function ChatPane(props: ChatPaneProps) {
         <Composer
           inputRef={composerRef}
           channelName={channel.name}
-          placeTitle={props.dm ? props.dm.title : `#${channel.name}`}
+          placeTitle={props.dm ? props.dm.title : channel.type === "voice" ? `chat de ${channel.name}` : `#${channel.name}`}
           members={members}
           users={users}
           replyingTo={replyingTo}
@@ -438,12 +448,28 @@ function MessageItem({ message, startsGroup, flash, ctx }: { message: Message; s
         </button>
       )}
       <span className="message__gutter">
-        {startsGroup ? <Avatar user={message.author} size="lg" /> : <time className="message__hover-time">{time}</time>}
+        {startsGroup ? (
+          ctx.onOpenUser ? (
+            <button type="button" className="message__avatar-button" aria-label={`Ações para ${message.author.displayName}`} onClick={(e) => ctx.onOpenUser!(message.author, anchorOf(e))}>
+              <Avatar user={message.author} size="lg" />
+            </button>
+          ) : (
+            <Avatar user={message.author} size="lg" />
+          )
+        ) : (
+          <time className="message__hover-time">{time}</time>
+        )}
       </span>
       <div className="message__body">
         {startsGroup && (
           <header className="message__header">
-            <span className="message__author">{message.author.displayName}</span>
+            {ctx.onOpenUser ? (
+              <button type="button" className="message__author message__author--button" onClick={(e) => ctx.onOpenUser!(message.author, anchorOf(e))}>
+                {message.author.displayName}
+              </button>
+            ) : (
+              <span className="message__author">{message.author.displayName}</span>
+            )}
             <time className="message__time">{time}</time>
           </header>
         )}
@@ -599,6 +625,20 @@ function Composer({
 }) {
   const [text, setText] = useState("");
   const uploads = useUploads(onUpload);
+  useEffect(() => {
+    const onMention = (event: Event) => {
+      const username = (event as CustomEvent<string>).detail;
+      setText((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}@${username} `);
+      requestAnimationFrame(() => {
+        const input = inputRef.current;
+        if (!input) return;
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+      });
+    };
+    window.addEventListener(MENTION_EVENT, onMention);
+    return () => window.removeEventListener(MENTION_EVENT, onMention);
+  }, [inputRef]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   addFilesRef.current = uploads.add;
   const [caret, setCaret] = useState(0);
@@ -759,7 +799,7 @@ function Composer({
           rows={1}
           value={text}
           maxLength={LIMITS.messageMax}
-          placeholder={replyingTo ? `Responder a ${replyingTo.author.displayName}` : placeTitle.startsWith("#") ? `Conversar em ${placeTitle}` : `Mensagem para ${placeTitle}`}
+          placeholder={replyingTo ? `Responder a ${replyingTo.author.displayName}` : placeTitle.startsWith("#") ? `Conversar em ${placeTitle}` : placeTitle.startsWith("chat de ") ? `Conversar no ${placeTitle}` : `Mensagem para ${placeTitle}`}
           aria-label={replyingTo ? `Resposta a ${replyingTo.author.displayName} em ${channelName}` : `Mensagem em ${channelName}`}
           aria-autocomplete="list"
           aria-expanded={open}

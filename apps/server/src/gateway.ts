@@ -172,7 +172,7 @@ export class Gateway implements LiveState {
       switch (frame.op) {
         case "typing": {
           const channel = this.store.getConversation(frame.channelId);
-          if (!channel || channel.type !== "text") return;
+          if (!channel) return; // texto ou chat da sala de voz
           if (!hasPermission(this.store.channelPermissionsOf(channel, connection.userId), "SEND_MESSAGES")) return;
           if (!this.typingLimiter.allow(`${connection.userId}:${channel.id}`)) return;
           this.dispatchToChannel(channel, { t: "TYPING_START", d: { channelId: channel.id, userId: connection.userId } }, connection.userId);

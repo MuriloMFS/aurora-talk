@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import {
   ArrowRightLeft,
+  ChevronDown,
   Home,
-  MessageCircle,
   Compass,
   Crown,
   Ellipsis,
@@ -16,6 +16,8 @@ import {
   Plus,
   ScreenShare,
   ScreenShareOff,
+  LogOut,
+  MessageCircle,
   Settings,
   Settings2,
   UserPlus,
@@ -23,10 +25,11 @@ import {
 } from "lucide-react";
 import { isPrivateChannel, type Channel, type ChannelType, type CustomStatus, type Id, type Member, type PresenceStatus, type Role, type User, type UserStatus, type VoiceState } from "@aurora/schema";
 import { PRESENCE_LABEL, StatusMenu, customStatusText } from "./status";
+import { anchorOf } from "./anchor";
 import type { GuildEntry } from "../state/chat-store";
 import { avatarIndex, initials } from "../messages";
 import { fileUrl } from "../avatar-image";
-import { memberColor, memberGroups } from "../roles";
+import { memberColor, memberGroups, type MemberGrouping } from "../roles";
 
 export const ICON = { size: 20, strokeWidth: 1.75, "aria-hidden": true } as const;
 export const ICON_SM = { size: 16, strokeWidth: 1.75, "aria-hidden": true } as const;
@@ -119,7 +122,7 @@ export function Rail({ guilds, activeGuildId, homeActive, homeMentions, onHome, 
                 title={guild.name}
                 onClick={() => onSelect(guild.id)}
               >
-                <span aria-hidden="true">{initials(guild.name)}</span>
+                {guild.icon ? <GuildIconImage icon={guild.icon} name={guild.name} /> : <span aria-hidden="true">{initials(guild.name)}</span>}
                 {unread && <span className="tile__unread" aria-hidden="true" />}
                 {mentions > 0 && (
                   <span className="badge badge--mention tile__badge" aria-hidden="true">
@@ -144,6 +147,13 @@ export function Rail({ guilds, activeGuildId, homeActive, homeMentions, onHome, 
       </ul>
     </nav>
   );
+}
+
+/** Imagem do servidor; se não carregar, volta para as iniciais. */
+function GuildIconImage({ icon, name }: { icon: string; name: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return <span aria-hidden="true">{initials(name)}</span>;
+  return <img className="tile__img" src={fileUrl(icon)} alt="" draggable={false} onError={() => setFailed(true)} />;
 }
 
 /* ---------------- canais, voz e painel do usuário ---------------- */
@@ -190,6 +200,12 @@ interface SidebarProps {
   onInvite: () => void;
   onOpenSettings: () => void;
   onOpenGuildSettings: () => void;
+  /** Ícones que aparecem no canal ao passar o mouse. */
+  onOpenChannelChat?: (channelId: Id) => void;
+  onEditChannel?: (channelId: Id) => void;
+  /** Sou o dono (o dono não sai: exclui, nas configurações). */
+  isOwner?: boolean;
+  onLeaveGuild?: () => void;
   onJoinVoice: (channelId: Id) => void;
   onLeaveVoice: () => void;
   onToggleMute: () => void;
@@ -219,33 +235,42 @@ export interface StatusControl {
 export function Sidebar(props: SidebarProps) {
   const { guild, textChannels, voiceChannels, activeChannelId, unread, mentions, canManageChannels, onSelectChannel } = props;
   const participantsOf = (channelId: Id) => Object.values(props.voiceStates).filter((v) => v.channelId === channelId);
+  const [collapsed, toggleCategory] = useCollapsedCategories(guild.id);
 
   return (
     <aside className="sidebar" aria-label={`Canais de ${guild.name}`}>
+      {guild.banner && (
+        <div className="sidebar__banner" aria-hidden="true">
+          <img src={fileUrl(guild.banner)} alt="" />
+        </div>
+      )}
       <header className="sidebar__header">
-        <h1 className="sidebar__title" title={guild.name}>
-          {guild.name}
-        </h1>
+        <GuildMenu {...props} />
         {props.canInvite && (
           <button type="button" className="icon-button" aria-label="Convidar pessoas" title="Convidar pessoas" onClick={props.onInvite}>
             <UserPlus {...ICON} />
           </button>
         )}
-        <button type="button" className="icon-button" aria-label="Configurações do servidor" title="Configurações do servidor" onClick={props.onOpenGuildSettings}>
-          <Settings2 {...ICON} />
-        </button>
       </header>
       <nav className="sidebar__nav" aria-label="Canais">
-        <CategoryHeader label="Canais de texto" canCreate={canManageChannels} onCreate={() => props.onCreateChannel("text")} createLabel="Criar canal de texto" />
+        <CategoryHeader
+          label="Canais de texto"
+          expanded={!collapsed.text}
+          onToggle={() => toggleCategory("text")}
+          canCreate={canManageChannels}
+          onCreate={() => props.onCreateChannel("text")}
+          createLabel="Criar canal de texto"
+        />
         <ul className="channel-list">
-          {textChannels.map((channel) => {
+          {/* recolhida: só fica o canal aberto e os com menção */}
+          {textChannels.filter((c) => !collapsed.text || c.id === activeChannelId || (mentions[c.id] ?? 0) > 0).map((channel) => {
             const selected = channel.id === activeChannelId;
             const isUnread = unread.has(channel.id) && !selected;
             // aparece até no canal aberto enquanto a janela está sem foco (bate com o selo do servidor e da barra de tarefas)
             const mentionCount = mentions[channel.id] ?? 0;
             const label = [channel.name, mentionCount > 0 && mentionLabel(mentionCount), isUnread && "não lido"].filter(Boolean).join(", ");
             return (
-              <li key={channel.id}>
+              <li key={channel.id} className="channel-row">
                 <button
                   type="button"
                   className={isUnread || mentionCount > 0 ? "channel channel--unread" : "channel"}
@@ -264,22 +289,36 @@ export function Sidebar(props: SidebarProps) {
                     isUnread && <span className="channel__unread-dot" aria-hidden="true" />
                   )}
                 </button>
+                <ChannelTools
+                  name={`#${channel.name}`}
+                  onInvite={props.canInvite ? props.onInvite : undefined}
+                  onEdit={canManageChannels && props.onEditChannel ? () => props.onEditChannel!(channel.id) : undefined}
+                />
               </li>
             );
           })}
         </ul>
 
         {(voiceChannels.length > 0 || canManageChannels) && (
-          <CategoryHeader label="Canais de voz" canCreate={canManageChannels} onCreate={() => props.onCreateChannel("voice")} createLabel="Criar canal de voz" />
+          <CategoryHeader
+            label="Canais de voz"
+            expanded={!collapsed.voice}
+            onToggle={() => toggleCategory("voice")}
+            canCreate={canManageChannels}
+            onCreate={() => props.onCreateChannel("voice")}
+            createLabel="Criar canal de voz"
+          />
         )}
         <ul className="channel-list">
-          {voiceChannels.map((channel) => {
+          {/* recolhida: só fica a sala em que estou */}
+          {voiceChannels.filter((c) => !collapsed.voice || props.myVoice?.channelId === c.id).map((channel) => {
             const participants = participantsOf(channel.id);
             const joined = props.myVoice?.channelId === channel.id;
             const allowed = joined || props.canConnect(channel.id);
             const action = joined ? ", você está aqui" : allowed ? ", entrar" : ", você não tem permissão para entrar";
             return (
               <li key={channel.id}>
+                <div className="channel-row">
                 <button
                   type="button"
                   className={joined ? "channel channel--voice-active" : allowed ? "channel" : "channel channel--locked"}
@@ -291,7 +330,21 @@ export function Sidebar(props: SidebarProps) {
                   <Volume2 {...ICON} />
                   <span className="channel__name">{channel.name}</span>
                   {isPrivateChannel(guild.id, channel.overwrites) && <PrivateMark />}
+                  {(mentions[channel.id] ?? 0) > 0 ? (
+                    <span className="badge badge--mention" aria-hidden="true">
+                      {badgeCount(mentions[channel.id] ?? 0)}
+                    </span>
+                  ) : (
+                    unread.has(channel.id) && channel.id !== activeChannelId && <span className="channel__unread-dot" aria-hidden="true" />
+                  )}
                 </button>
+                <ChannelTools
+                  name={channel.name}
+                  chatOpen={channel.id === activeChannelId}
+                  onChat={props.onOpenChannelChat ? () => props.onOpenChannelChat!(channel.id) : undefined}
+                  onEdit={canManageChannels && props.onEditChannel ? () => props.onEditChannel!(channel.id) : undefined}
+                />
+                </div>
                 {participants.length > 0 && (
                   <ul className="voice-users" aria-label={`Na sala ${channel.name}`}>
                     {participants.map((state) => {
@@ -353,6 +406,107 @@ export function Sidebar(props: SidebarProps) {
       <VoicePanel {...props} />
       <UserPanel me={props.me} online={props.online} statusText={props.statusText} onOpenSettings={props.onOpenSettings} statusControl={props.statusControl} />
     </aside>
+  );
+}
+
+/** Ícones do canal (aparecem ao passar o mouse ou com o foco): chat da voz, convidar e editar. */
+function ChannelTools({ name, chatOpen, onChat, onInvite, onEdit }: { name: string; chatOpen?: boolean; onChat?: () => void; onInvite?: () => void; onEdit?: () => void }) {
+  if (!onChat && !onInvite && !onEdit) return null;
+  return (
+    <span className={chatOpen ? "channel-tools channel-tools--pinned" : "channel-tools"}>
+      {onChat && (
+        <button type="button" className="icon-button icon-button--small" aria-label={`Abrir o chat de ${name}`} aria-pressed={chatOpen} title="Abrir chat" onClick={onChat}>
+          <MessageCircle {...ICON_SM} />
+        </button>
+      )}
+      {onInvite && (
+        <button type="button" className="icon-button icon-button--small" aria-label={`Convidar para ${name}`} title="Convidar pessoas" onClick={onInvite}>
+          <UserPlus {...ICON_SM} />
+        </button>
+      )}
+      {onEdit && (
+        <button type="button" className="icon-button icon-button--small" aria-label={`Editar ${name}`} title="Editar canal" onClick={onEdit}>
+          <Settings {...ICON_SM} />
+        </button>
+      )}
+    </span>
+  );
+}
+
+/** Nome do servidor que abre o menu: convidar, configurações, criar canal e sair. */
+function GuildMenu(props: SidebarProps) {
+  const { guild } = props;
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    rootRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+    const onPointer = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointer);
+    return () => document.removeEventListener("pointerdown", onPointer);
+  }, [open]);
+  const choose = (action: () => void) => {
+    setOpen(false);
+    action();
+  };
+  const onKeyDown = (event: ReactKeyboardEvent) => {
+    const list = [...(rootRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [])];
+    const index = list.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+      triggerRef.current?.focus();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      list[(index + (event.key === "ArrowDown" ? 1 : -1) + list.length) % list.length]?.focus();
+    } else if (event.key === "Tab") setOpen(false);
+  };
+  return (
+    <div className="guild-menu" ref={rootRef}>
+      <button ref={triggerRef} type="button" className="guild-menu__trigger" aria-haspopup="menu" aria-expanded={open} title={guild.name} onClick={() => setOpen((v) => !v)}>
+        <h1 className="sidebar__title">{guild.name}</h1>
+        <ChevronDown {...ICON_SM} className={open ? "guild-menu__chevron guild-menu__chevron--open" : "guild-menu__chevron"} />
+      </button>
+      {open && (
+        <div className="guild-menu__list" role="menu" aria-label={`Menu de ${guild.name}`} onKeyDown={onKeyDown}>
+          {props.canInvite && (
+            <button type="button" role="menuitem" className="user-menu__item" onClick={() => choose(props.onInvite)}>
+              <UserPlus {...ICON_SM} />
+              <span className="user-menu__label">Convidar para o servidor</span>
+            </button>
+          )}
+          <button type="button" role="menuitem" className="user-menu__item" onClick={() => choose(props.onOpenGuildSettings)}>
+            <Settings2 {...ICON_SM} />
+            <span className="user-menu__label">Configurações do servidor</span>
+          </button>
+          {props.canManageChannels && (
+            <>
+              <button type="button" role="menuitem" className="user-menu__item" onClick={() => choose(() => props.onCreateChannel("text"))}>
+                <Hash {...ICON_SM} />
+                <span className="user-menu__label">Criar canal de texto</span>
+              </button>
+              <button type="button" role="menuitem" className="user-menu__item" onClick={() => choose(() => props.onCreateChannel("voice"))}>
+                <Volume2 {...ICON_SM} />
+                <span className="user-menu__label">Criar canal de voz</span>
+              </button>
+            </>
+          )}
+          {!props.isOwner && props.onLeaveGuild && (
+            <>
+              <div className="user-menu__divider" role="separator" />
+              <button type="button" role="menuitem" className="user-menu__item user-menu__item--danger" onClick={() => choose(props.onLeaveGuild!)}>
+                <LogOut {...ICON_SM} />
+                <span className="user-menu__label">Sair do servidor</span>
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -475,10 +629,59 @@ function VoiceUserMenu({
   );
 }
 
-function CategoryHeader({ label, canCreate, onCreate, createLabel }: { label: string; canCreate: boolean; onCreate: () => void; createLabel: string }) {
+type CategoryKind = "text" | "voice";
+
+/** Categorias recolhidas, lembradas por servidor neste aparelho (sem armazenamento, tudo aberto). */
+function useCollapsedCategories(guildId: Id): [Partial<Record<CategoryKind, boolean>>, (kind: CategoryKind) => void] {
+  const key = `aurora.collapsed.${guildId}`;
+  const read = () => {
+    try {
+      const value: unknown = JSON.parse(localStorage.getItem(key) ?? "{}");
+      return value && typeof value === "object" ? (value as Partial<Record<CategoryKind, boolean>>) : {};
+    } catch {
+      return {};
+    }
+  };
+  const [state, setState] = useState(read);
+  const [forGuild, setForGuild] = useState(guildId);
+  if (forGuild !== guildId) {
+    setForGuild(guildId);
+    setState(read());
+  }
+  const toggle = (kind: CategoryKind) =>
+    setState((current) => {
+      const next = { ...current, [kind]: !current[kind] };
+      try {
+        localStorage.setItem(key, JSON.stringify(next));
+      } catch {
+        // sem armazenamento: vale só até fechar o app
+      }
+      return next;
+    });
+  return [state, toggle];
+}
+
+function CategoryHeader({
+  label,
+  expanded,
+  onToggle,
+  canCreate,
+  onCreate,
+  createLabel,
+}: {
+  label: string;
+  expanded: boolean;
+  onToggle: () => void;
+  canCreate: boolean;
+  onCreate: () => void;
+  createLabel: string;
+}) {
   return (
     <div className="category">
-      <span className="category__label">{label}</span>
+      <button type="button" className="category__toggle" aria-expanded={expanded} onClick={onToggle}>
+        <ChevronDown {...ICON_SM} className="category__chevron" />
+        <span className="category__label">{label}</span>
+      </button>
       {canCreate && (
         <button type="button" className="icon-button icon-button--small" aria-label={createLabel} title={createLabel} onClick={onCreate}>
           <Plus {...ICON_SM} />
@@ -656,23 +859,27 @@ export function MemberList({
   ownerId,
   roles,
   meId,
-  canAddFriend,
-  onMessage,
-  onAddFriend,
+  onOpenUser,
 }: {
   members: Member[];
   ownerId: Id;
   roles: readonly Role[];
   meId?: Id;
-  /** Ainda não somos amigos nem há pedido/bloqueio. */
-  canAddFriend?: (userId: Id) => boolean;
-  onMessage?: (user: User) => void;
-  onAddFriend?: (user: User) => void;
+  /** Clique numa pessoa: menu com perfil, mensagem, amizade, cargos e moderação. */
+  onOpenUser?: (user: User, at: { x: number; y: number }) => void;
 }) {
-  const groups = memberGroups(members, roles);
+  const [grouping, setGrouping] = useMemberGrouping();
+  const groups = memberGroups(members, roles, grouping);
 
   return (
     <aside className="members" aria-label="Membros">
+      <div className="members__grouping" role="radiogroup" aria-label="Agrupar membros por">
+        {(["role", "status"] as const).map((value) => (
+          <button key={value} type="button" role="radio" aria-checked={grouping === value} className="members__grouping-option" onClick={() => setGrouping(value)}>
+            {value === "role" ? "Cargo" : "Status"}
+          </button>
+        ))}
+      </div>
       {groups.map((group) => (
         <section key={group.key}>
           <h3 className="members__role">
@@ -683,6 +890,18 @@ export function MemberList({
               const color = memberColor(roles, member);
               return (
               <li key={member.user.id} className={member.online ? "member" : "member member--offline"}>
+                <button
+                  type="button"
+                  className="member__open"
+                  aria-label={`${member.user.displayName}${member.user.id === meId ? " (você)" : ""}: ver ações`}
+                  disabled={!onOpenUser}
+                  onClick={(e) => onOpenUser?.(member.user, anchorOf(e))}
+                  onContextMenu={(e) => {
+                    if (!onOpenUser) return;
+                    e.preventDefault();
+                    onOpenUser(member.user, { x: e.clientX, y: e.clientY });
+                  }}
+                >
                 <Avatar user={member.user} online={member.online} status={member.status} />
                 <div className="member__text">
                   <span className="member__name">
@@ -697,20 +916,7 @@ export function MemberList({
                   </span>
                   <span className="member__activity">{(member.online && customStatusText(member.customStatus)) || `@${member.user.username}`}</span>
                 </div>
-                {member.user.id !== meId && (onMessage || onAddFriend) && (
-                  <span className="member__actions">
-                    {onMessage && (
-                      <button type="button" className="icon-button icon-button--small" aria-label={`Mandar mensagem para ${member.user.displayName}`} title="Mensagem" onClick={() => onMessage(member.user)}>
-                        <MessageCircle {...ICON_SM} />
-                      </button>
-                    )}
-                    {onAddFriend && canAddFriend?.(member.user.id) && (
-                      <button type="button" className="icon-button icon-button--small" aria-label={`Pedir amizade a ${member.user.displayName}`} title="Pedir amizade" onClick={() => onAddFriend(member.user)}>
-                        <UserPlus {...ICON_SM} />
-                      </button>
-                    )}
-                  </span>
-                )}
+                </button>
               </li>
               );
             })}
@@ -719,6 +925,29 @@ export function MemberList({
       ))}
     </aside>
   );
+}
+
+/** Agrupar a lista de membros por cargo ou por status (lembrado neste aparelho). */
+function useMemberGrouping(): [MemberGrouping, (value: MemberGrouping) => void] {
+  const KEY = "aurora.memberGrouping";
+  const [value, setValue] = useState<MemberGrouping>(() => {
+    try {
+      return localStorage.getItem(KEY) === "status" ? "status" : "role";
+    } catch {
+      return "role";
+    }
+  });
+  return [
+    value,
+    (next) => {
+      setValue(next);
+      try {
+        localStorage.setItem(KEY, next);
+      } catch {
+        // sem armazenamento: vale até fechar o app
+      }
+    },
+  ];
 }
 
 /* ---------------- estados vazios ---------------- */

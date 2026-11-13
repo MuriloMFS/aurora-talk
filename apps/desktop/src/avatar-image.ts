@@ -9,6 +9,13 @@ export const fileUrl = (fileId: Id): string => `${mediaBase}/api/files/${encodeU
 /** Caminho do servidor (ex.: link assinado de anexo) para endereço completo. */
 export const mediaUrl = (path: string): string => (/^https?:/.test(path) ? path : `${mediaBase}${path}`);
 
+/** Maior pedaço central com a proporção pedida (largura ÷ altura). */
+export function centerCrop(width: number, height: number, aspect: number): { sx: number; sy: number; sw: number; sh: number } {
+  const sw = Math.min(width, Math.round(height * aspect));
+  const sh = Math.min(height, Math.round(sw / aspect));
+  return { sx: Math.floor((width - sw) / 2), sy: Math.floor((height - sh) / 2), sw, sh };
+}
+
 /** Quadrado central da imagem (a foto de perfil é redonda/quadrada; corta o que sobra nas bordas). */
 export function centerSquare(width: number, height: number): { sx: number; sy: number; size: number } {
   const size = Math.min(width, height);
@@ -22,7 +29,16 @@ export const AVATAR_SOURCE_MAX_BYTES = 20 * 1024 * 1024;
  * Recorta o quadrado central e reduz para 256 px, em WebP (PNG se o navegador não fizer WebP).
  * O servidor recebe só a imagem pequena e confere o tipo pelos bytes.
  */
-export async function prepareAvatar(file: Blob): Promise<Blob> {
+export function prepareAvatar(file: Blob): Promise<Blob> {
+  return prepareImage(file, LIMITS.avatarSize, LIMITS.avatarSize);
+}
+
+/** Capa do servidor: recorte central em 16:9, reduzida para 960×540. */
+export function prepareBanner(file: Blob): Promise<Blob> {
+  return prepareImage(file, LIMITS.bannerWidth, LIMITS.bannerHeight);
+}
+
+async function prepareImage(file: Blob, width: number, height: number): Promise<Blob> {
   if (file.size > AVATAR_SOURCE_MAX_BYTES) throw new Error("A imagem passa de 20 MB. Escolha uma menor.");
   let bitmap: ImageBitmap;
   try {
@@ -30,15 +46,15 @@ export async function prepareAvatar(file: Blob): Promise<Blob> {
   } catch {
     throw new Error("Não deu para abrir essa imagem. Use PNG, JPEG, WebP ou GIF.");
   }
-  const { sx, sy, size } = centerSquare(bitmap.width, bitmap.height);
-  const out = Math.min(LIMITS.avatarSize, size);
+  const { sx, sy, sw, sh } = centerCrop(bitmap.width, bitmap.height, width / height);
+  const scale = Math.min(1, width / sw);
   const canvas = document.createElement("canvas");
-  canvas.width = out;
-  canvas.height = out;
+  canvas.width = Math.max(1, Math.round(sw * scale));
+  canvas.height = Math.max(1, Math.round(sh * scale));
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Não deu para preparar a imagem. Tente de novo.");
   ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(bitmap, sx, sy, size, size, 0, 0, out, out);
+  ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
   bitmap.close();
   const toBlob = (type: string) => new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, type, 0.9));
   const blob = (await toBlob("image/webp")) ?? (await toBlob("image/png"));

@@ -10,6 +10,8 @@ export class ApiError extends Error {
   }
 }
 
+type GuildImages = { id: Id; name: string; icon: string | null; banner: string | null };
+
 /** Cliente REST do servidor Aurora. Mensagens de erro já vêm prontas para mostrar ao usuário. */
 export class ApiClient {
   readonly baseUrl: string;
@@ -170,6 +172,28 @@ export class ApiClient {
       throw new ApiError(response.status, error?.code ?? "http_error", error?.message ?? `O servidor respondeu com erro ${response.status}.`);
     }
     return data as User;
+  }
+  /** Imagem (`icon`) ou capa (`banner`) do servidor, já recortada e reduzida pelo app. */
+  async uploadGuildImage(guildId: Id, which: "icon" | "banner", image: Blob) {
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}/api/guilds/${guildId}/${which}`, {
+        method: "PUT",
+        headers: { ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}), "Content-Type": image.type || "application/octet-stream" },
+        body: image,
+      });
+    } catch {
+      throw new ApiError(0, "network", "Não foi possível falar com o servidor. Confira a conexão e tente de novo.");
+    }
+    const data = (await response.json().catch(() => null)) as GuildImages | ApiErrorBody | null;
+    if (!response.ok) {
+      const error = (data as ApiErrorBody | null)?.error;
+      throw new ApiError(response.status, error?.code ?? "http_error", error?.message ?? `O servidor respondeu com erro ${response.status}.`);
+    }
+    return data as GuildImages;
+  }
+  removeGuildImage(guildId: Id, which: "icon" | "banner") {
+    return this.request<GuildImages>("DELETE", `/api/guilds/${guildId}/${which}`);
   }
   removeAvatar() {
     return this.request<User>("DELETE", "/api/users/@me/avatar");

@@ -32,6 +32,8 @@ import {
 } from "./state/chat-store";
 import { DmHeaderActions, FriendsView, HomeSidebar, PickFriendsDialog, RenameGroupDialog } from "./ui/home";
 import { CustomStatusDialog } from "./ui/status";
+import { UserMenu, type UserMenuTarget } from "./ui/UserMenu";
+import { Modal } from "./ui/Modal";
 import type { StatusControl } from "./ui/shell";
 import { untilText } from "./roles";
 import { setMediaBase } from "./avatar-image";
@@ -141,6 +143,9 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
   const [settingsOpen, setSettingsOpen] = useState<SettingsSectionId | null>(null);
   const closeSettings = useCallback(() => setSettingsOpen(null), []);
   const [guildSettingsOpen, setGuildSettingsOpen] = useState<Id | null>(null);
+  /** Abrir as configurações já numa seção/canal (ícone de engrenagem do canal). */
+  const [guildSettingsStart, setGuildSettingsStart] = useState<{ section: "channels"; channelId: Id } | null>(null);
+  const [leaveConfirm, setLeaveConfirm] = useState<Id | null>(null);
   const closeGuildSettings = useCallback(() => setGuildSettingsOpen(null), []);
   /** Servidores que EU estou saindo/excluindo (o GUILD_DELETE deles não vira aviso de "você foi removido"). */
   const leavingRef = useRef(new Set<Id>());
@@ -324,7 +329,8 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
   const guild = guildId ? state.guilds[guildId] : undefined;
   const textChannelIds = guild ? guild.channelIds.filter((id) => state.channels[id]?.type === "text") : [];
   const remembered = guild ? channelByGuild[guild.id] : undefined;
-  const channelId = remembered && textChannelIds.includes(remembered) ? remembered : (textChannelIds[0] ?? null);
+  // o aberto pode ser um canal de texto ou o chat de uma sala de voz
+  const channelId = remembered && guild?.channelIds.includes(remembered) && state.channels[remembered] ? remembered : (textChannelIds[0] ?? null);
   const channel = channelId ? state.channels[channelId] : undefined;
   // Início: amigos e conversas diretas (o botão do topo da barra de servidores)
   const [homeChosen, setHomeChosen] = useState(false);
@@ -362,6 +368,8 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
   // ---- conversas diretas e amigos ----
   const [homeDialog, setHomeDialog] = useState<"newGroup" | "addPeople" | "rename" | null>(null);
   const [customStatusOpen, setCustomStatusOpen] = useState(false);
+  const [userMenu, setUserMenu] = useState<UserMenuTarget | null>(null);
+  const closeUserMenu = useCallback(() => setUserMenu(null), []);
   /** Abre (ou cria) a conversa com essa pessoa e vai para ela. */
   const openDmWith = async (userIds: Id[], name?: string) => {
     try {
@@ -670,6 +678,8 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
       blockedReason={options.blockedReason}
       dm={options.dm ? { title: dmName(options.dm), group: options.dm.type === "group_dm" } : undefined}
       isBlocked={(userId) => isBlocked(state, userId)}
+      onOpenUser={(user, at) => setUserMenu({ user, guildId: options.dm ? null : (guild?.id ?? null), ...at })}
+      searchPlaceholder={options.dm ? (options.dm.type === "group_dm" ? "Buscar no grupo" : undefined) : guild ? `Buscar em ${guild.name}` : undefined}
       typingNames={typingNames}
       status={state.status}
       membersOpen={membersOpen}
@@ -806,7 +816,9 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
                 },
               )
             : <FriendsView relationships={relationships} api={api} onMessage={(user) => void openDmWith([user.id]).catch(() => undefined)} onOpenDrawer={() => setDrawerOpen(true)} />}
-          {activeDm?.type === "group_dm" && membersOpen && <MemberList members={Object.values(dmMembers)} ownerId={activeDm.ownerId ?? ""} roles={[]} />}
+          {activeDm?.type === "group_dm" && membersOpen && (
+            <MemberList members={Object.values(dmMembers)} ownerId={activeDm.ownerId ?? ""} roles={[]} meId={me.id} onOpenUser={(user, at) => setUserMenu({ user, guildId: null, ...at })} />
+          )}
         </>
       ) : guild && channel ? (
         <>
@@ -845,7 +857,17 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
             }}
             onInvite={() => setDialog("invite")}
             onOpenSettings={() => setSettingsOpen("account")}
-            onOpenGuildSettings={() => setGuildSettingsOpen(guild.id)}
+            onOpenGuildSettings={() => {
+              setGuildSettingsStart(null);
+              setGuildSettingsOpen(guild.id);
+            }}
+            onOpenChannelChat={(id) => selectChannel(id)}
+            onEditChannel={(id) => {
+              setGuildSettingsStart({ section: "channels", channelId: id });
+              setGuildSettingsOpen(guild.id);
+            }}
+            isOwner={guild.ownerId === me.id}
+            onLeaveGuild={() => setLeaveConfirm(guild.id)}
             onJoinVoice={(id) => void joinVoice(id, guild.id)}
             onLeaveVoice={() => void leaveVoice()}
             onToggleMute={toggleMute}
@@ -878,9 +900,7 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
               ownerId={guild.ownerId}
               roles={guild.roles}
               meId={me.id}
-              canAddFriend={(userId) => !state.relationships[userId]}
-              onMessage={(user) => void openDmWith([user.id]).catch(() => undefined)}
-              onAddFriend={(user) => void friendAction(api.requestFriendById(user.id))}
+              onOpenUser={(user, at) => setUserMenu({ user, guildId: guild.id, ...at })}
             />
           )}
         </>
@@ -924,6 +944,45 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
             for (const id of ids) await api.addToGroupDm(activeDm.id, id);
           }}
           onClose={() => setHomeDialog(null)}
+        />
+      )}
+      {leaveConfirm && state.guilds[leaveConfirm] && (
+        <Modal
+          title={`Sair de “${state.guilds[leaveConfirm]!.name}”?`}
+          description="Você deixa de ver os canais e a conversa. Para voltar, vai precisar de um convite novo."
+          onClose={() => setLeaveConfirm(null)}
+        >
+          <div className="modal__actions">
+            <button type="button" className="button button--secondary" onClick={() => setLeaveConfirm(null)}>
+              Cancelar
+            </button>
+            <button
+              type="button"
+              className="button button--danger"
+              onClick={() => {
+                const id = leaveConfirm;
+                setLeaveConfirm(null);
+                leavingRef.current.add(id);
+                api.leaveGuild(id).catch((error: unknown) => {
+                  leavingRef.current.delete(id);
+                  setChatNotice(error instanceof ApiError ? error.message : "Não foi possível sair do servidor. Tente de novo.");
+                });
+              }}
+            >
+              Sair do servidor
+            </button>
+          </div>
+        </Modal>
+      )}
+      {userMenu && state.me && (
+        <UserMenu
+          key={`${userMenu.user.id}:${userMenu.x}:${userMenu.y}`}
+          target={userMenu}
+          state={state}
+          api={api}
+          onClose={closeUserMenu}
+          onMessage={(user) => void openDmWith([user.id]).catch(() => undefined)}
+          onNotice={setChatNotice}
         />
       )}
       {customStatusOpen && (
@@ -980,6 +1039,8 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
           api={api}
           onLeaving={(id) => leavingRef.current.add(id)}
           onClose={closeGuildSettings}
+          initialSection={guildSettingsStart?.section}
+          initialChannelId={guildSettingsStart?.channelId ?? null}
         />
       )}
       {settingsOpen && (

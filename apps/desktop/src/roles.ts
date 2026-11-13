@@ -22,8 +22,26 @@ export interface MemberGroup {
  * Lista de membros: um grupo por cargo marcado como "mostrar separado" (do mais alto ao mais baixo),
  * depois "Online" e por fim "Offline" (offline não é separado por cargo). Grupo vazio não aparece.
  */
-export function memberGroups(members: readonly Member[], roles: readonly Role[]): MemberGroup[] {
+export type MemberGrouping = "role" | "status";
+const STATUS_GROUPS: { key: "online" | "idle" | "dnd" | "offline"; label: string }[] = [
+  { key: "online", label: "Online" },
+  { key: "idle", label: "Ausente" },
+  { key: "dnd", label: "Não perturbe" },
+  { key: "offline", label: "Offline" },
+];
+const statusOf = (m: Member) => m.status ?? (m.online ? "online" : "offline");
+
+/**
+ * Grupos da lista de membros.
+ * - por cargo (padrão): cargos "mostrar separado" (só quem está online), depois Online e Offline;
+ * - por status: Online, Ausente, Não perturbe e Offline.
+ * Dentro de cada grupo, em ordem alfabética.
+ */
+export function memberGroups(members: readonly Member[], roles: readonly Role[], grouping: MemberGrouping = "role"): MemberGroup[] {
   const byName = (a: Member, b: Member) => a.user.displayName.localeCompare(b.user.displayName, "pt-BR");
+  if (grouping === "status") {
+    return STATUS_GROUPS.map(({ key, label }) => ({ key, label, members: members.filter((m) => statusOf(m) === key).sort(byName) })).filter((g) => g.members.length > 0);
+  }
   const hoisted = [...roles].filter((role) => role.hoist).sort(byPositionDesc);
   const groups: MemberGroup[] = hoisted.map((role) => ({ key: role.id, label: role.name, members: [] }));
   const online: Member[] = [];

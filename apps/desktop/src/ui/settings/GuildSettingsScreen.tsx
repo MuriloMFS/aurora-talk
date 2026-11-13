@@ -32,6 +32,9 @@ import { ApiError, type ApiClient } from "../../net/api";
 import type { GuildEntry } from "../../state/chat-store";
 import { ROLE_COLOR_NAMES, auditDetail, auditSentence, untilText } from "../../roles";
 import { Modal } from "../Modal";
+import { GuildBannerPicker, GuildIconPicker } from "../GuildIconPicker";
+import { GuildCard } from "../GuildCard";
+import { fileUrl } from "../../avatar-image";
 import { Avatar, ICON, ICON_SM } from "../shell";
 import { FormStatus, SettingsGroup, SwitchRow } from "./controls";
 
@@ -51,6 +54,9 @@ export interface GuildSettingsProps {
   /** Sair ou excluir deu certo (o app não deve tratar o GUILD_DELETE como "você foi removido"). */
   onLeaving: (guildId: Id) => void;
   onClose: () => void;
+  /** Abrir direto numa seção (e, em Canais, nas permissões de um canal). */
+  initialSection?: GuildSectionId;
+  initialChannelId?: Id | null;
 }
 
 /** Configurações do servidor: cada seção aparece só para quem tem a permissão dela (o servidor confere de novo). */
@@ -68,7 +74,7 @@ export function GuildSettingsScreen(props: GuildSettingsProps) {
     { id: "audit", label: "Registro de auditoria", Icon: ScrollText, visible: can("VIEW_AUDIT_LOG") },
   ];
   const visible = nav.filter((item) => item.visible);
-  const [section, setSection] = useState<GuildSectionId>("overview");
+  const [section, setSection] = useState<GuildSectionId>(props.initialSection ?? "overview");
   const current = visible.some((item) => item.id === section) ? section : "overview"; // perdeu a permissão no meio: volta
   const [confirm, setConfirm] = useState<"leave" | "delete" | null>(null);
   const titleId = useId();
@@ -225,6 +231,42 @@ function OverviewSection({ guild, members, permissions, api }: GuildSettingsProp
   };
   return (
     <>
+      <GuildCard guild={guild} members={Object.values(members)} />
+      <SettingsGroup title="Capa do servidor" description={canEdit ? "Aparece no topo da lista de canais e no cartão do servidor." : "Só quem tem “Gerenciar servidor” pode mudar."}>
+        <GuildBannerPicker
+          current={guild.banner ? fileUrl(guild.banner) : null}
+          disabled={!canEdit}
+          onPick={async (image) => {
+            setStatus(null);
+            try {
+              if (image) await api.uploadGuildImage(guild.id, "banner", image);
+              else await api.removeGuildImage(guild.id, "banner");
+              setStatus({ kind: "ok", text: image ? "Capa salva. Todo mundo já vê a nova." : "Capa removida." });
+            } catch (error) {
+              setStatus({ kind: "error", text: errorText(error) });
+              throw error;
+            }
+          }}
+        />
+      </SettingsGroup>
+      <SettingsGroup title="Imagem do servidor" description={canEdit ? "Aparece na barra de servidores de todo mundo." : "Só quem tem “Gerenciar servidor” pode mudar."}>
+        <GuildIconPicker
+          name={guild.name}
+          current={guild.icon ? fileUrl(guild.icon) : null}
+          disabled={!canEdit}
+          onPick={async (image) => {
+            setStatus(null);
+            try {
+              if (image) await api.uploadGuildImage(guild.id, "icon", image);
+              else await api.removeGuildImage(guild.id, "icon");
+              setStatus({ kind: "ok", text: image ? "Imagem salva. Todo mundo já vê a nova." : "Imagem removida." });
+            } catch (error) {
+              setStatus({ kind: "error", text: errorText(error) });
+              throw error;
+            }
+          }}
+        />
+      </SettingsGroup>
       <SettingsGroup title="Nome do servidor" description={canEdit ? undefined : "Só quem tem “Gerenciar servidor” pode mudar."}>
         <form className="settings-inline-form" onSubmit={submit}>
           <label htmlFor={id} className="sr-only">
@@ -662,7 +704,7 @@ function MembersSection({ guild, members, me, permissions, api }: GuildSettingsP
   );
 }
 
-function TimeoutDialog({ user, onCancel, onConfirm }: { user: User; onCancel: () => void; onConfirm: (minutes: number) => void }) {
+export function TimeoutDialog({ user, onCancel, onConfirm }: { user: User; onCancel: () => void; onConfirm: (minutes: number) => void }) {
   const [minutes, setMinutes] = useState<number>(TIMEOUT_MINUTES[1]);
   return (
     <Modal
@@ -701,7 +743,7 @@ function TimeoutDialog({ user, onCancel, onConfirm }: { user: User; onCancel: ()
   );
 }
 
-function BanDialog({ user, onCancel, onConfirm }: { user: User; onCancel: () => void; onConfirm: (reason: string) => void }) {
+export function BanDialog({ user, onCancel, onConfirm }: { user: User; onCancel: () => void; onConfirm: (reason: string) => void }) {
   const [reason, setReason] = useState("");
   const id = useId();
   return (
@@ -739,7 +781,7 @@ function ChannelsSection(props: GuildSettingsProps) {
   const { channels, api } = props;
   const [status, setStatus] = useState<Status>(null);
   const [deleting, setDeleting] = useState<Channel | null>(null);
-  const [editingId, setEditingId] = useState<Id | null>(null);
+  const [editingId, setEditingId] = useState<Id | null>(props.initialChannelId ?? null);
   const editing = editingId ? channels.find((c) => c.id === editingId) : undefined;
   if (editing) return <ChannelPermissions {...props} channel={editing} onBack={() => setEditingId(null)} />;
   const run = async (work: () => Promise<unknown>, ok: string) => {

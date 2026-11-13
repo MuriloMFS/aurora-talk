@@ -22,8 +22,8 @@ Guia para manter **uma única linguagem visual** em desktop (Tauri 2 + WebView, 
 ## 2. Identidade (provisória — trocar quando a marca for definida)
 | Elemento | Decisão | Licença/obs. |
 |---|---|---|
-| Acento de marca | **Aurora teal** (`#2dd4bf` no escuro / `#0f766e` no claro) | cores não têm licença |
-| Gradiente de marca | `teal → violeta` **só** em momentos de marca (splash, onboarding, convite, cabeçalho de perfil) — nunca em UI funcional | — |
+| Acento de marca | **Rosa "pôr do sol"** (`#db2777` no escuro / `#c0215f` no claro), texto branco por cima; links e foco em rosa claro (`#ff8cc4` no escuro) | cores não têm licença; inspiração de clima (neon, entardecer), sem logo, fonte ou imagem de terceiros |
+| Gradiente de marca | `laranja → rosa → roxo` **só** em momentos de marca (splash, onboarding, convite, cabeçalho de perfil) — nunca em UI funcional | — |
 | Fonte UI | **Inter** (variável) | SIL OFL 1.1 |
 | Fonte código | **JetBrains Mono** | SIL OFL 1.1 |
 | Ícones | **Lucide** (traço 1.75, 20 px padrão) | ISC |
@@ -39,32 +39,32 @@ Contrastes abaixo foram **calculados (WCAG 2.x)** em 2026-11-08; ao mudar um val
 :root, :root[data-theme="dark"] {
   color-scheme: dark;
   /* superfícies (do mais fundo ao mais alto) */
-  --bg-rail:#0f1117; --bg-sidebar:#151821; --bg-chat:#1b1f2a; --bg-elevated:#232836; --bg-hover:#2a3042;
+  --bg-rail:#131316; --bg-sidebar:#1a1b1f; --bg-chat:#202126; --bg-elevated:#26272c; --bg-hover:#2e2f35;
   --bg-selected: var(--bg-hover);
   /* texto */
-  --text-primary:#e8ebf3; --text-secondary:#b4bbcc; --text-muted:#959db1;
+  --text-primary:#ececf1; --text-secondary:#b8b9c3; --text-muted:#9a9ba6;
   /* bordas: divisor decorativo vs. contorno de controle (>=3:1) */
-  --border:#2e3446; --border-strong:#6f7891;
+  --border:#2c2d33; --border-strong:#6e707c;
   /* marca/ação */
-  --accent:#2dd4bf; --accent-hover:#5eead4; --accent-active:#14b8a6; --on-accent:#04201c;
-  --link:#5eead4; --focus-ring:#5eead4;
+  --accent:#db2777; --accent-hover:#c0215f; --accent-active:#a81d53; --on-accent:#ffffff;
+  --link:#ff8cc4; --focus-ring:#ff8cc4;
   /* feedback */
-  --danger:#ff6b6b; --success:#3ecf8e; --warning:#f5b83d;
-  --mention-bg:#ff6b6b; --mention-fg:#1a0505;
+  --danger:#ff6b5e; --success:#3ecf8e; --warning:#f5b83d;
+  --mention-bg:#ff6b5e; --mention-fg:#2a0605;
   /* presença (sempre acompanhada de forma — ver §6.6) */
-  --presence-online:#3ecf8e; --presence-idle:#f5b83d; --presence-dnd:#ff6b6b; --presence-offline:#959db1;
+  --presence-online:#3ecf8e; --presence-idle:#f5b83d; --presence-dnd:#ff6b5e; --presence-offline:#9a9ba6;
 }
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg-rail:#e6e9f0; --bg-sidebar:#eff1f6; --bg-chat:#ffffff; --bg-elevated:#ffffff; --bg-hover:#e8ebf2;
+  --bg-rail:#e3e3e7; --bg-sidebar:#f2f2f4; --bg-chat:#ffffff; --bg-elevated:#ffffff; --bg-hover:#ececef;
   --bg-selected: var(--bg-hover);
-  --text-primary:#171a23; --text-secondary:#4a5163; --text-muted:#586075;
-  --border:#d5d9e3; --border-strong:#7b8397;
-  --accent:#0f766e; --accent-hover:#115e59; --accent-active:#134e4a; --on-accent:#ffffff;
-  --link:#0b6159; --focus-ring:#0f766e;
+  --text-primary:#17171c; --text-secondary:#4a4b55; --text-muted:#5b5c67;
+  --border:#dcdce1; --border-strong:#7b7c88;
+  --accent:#c0215f; --accent-hover:#a81d53; --accent-active:#8f1847; --on-accent:#ffffff;
+  --link:#b0154f; --focus-ring:#c0215f;
   --danger:#c92a2a; --success:#15803d; --warning:#a16207;
   --mention-bg:#c92a2a; --mention-fg:#ffffff;
-  --presence-online:#15803d; --presence-idle:#a16207; --presence-dnd:#c92a2a; --presence-offline:#586075;
+  --presence-online:#15803d; --presence-idle:#a16207; --presence-dnd:#c92a2a; --presence-offline:#5b5c67;
 }
 ```
 Resolver "seguir o sistema" **em JS** (`matchMedia('(prefers-color-scheme: dark)')`) e sempre gravar `data-theme` no `<html>`. Persistir a escolha; aplicar antes do primeiro paint (script inline) para evitar *flash*.
@@ -76,7 +76,7 @@ Resolver "seguir o sistema" **em JS** (`matchMedia('(prefers-color-scheme: dark)
 - Gradientes e transparências não podem reduzir contraste abaixo do mínimo (use a cor **resultante** no teste).
 - Texto sobre `--accent`: sempre `--on-accent`. Sobre `--mention-bg`: `--mention-fg`.
 
-**Contrastes verificados (resumo)** — escuro: texto-primário/chat 13,8 · secundário 8,6 · muted 6,1 · link 11,1 · foco 11,1 · on-accent 9,2 · `--border-strong` 3,7. Claro: primário 17,4 · secundário 7,9 · muted 6,3 · link 7,3 · foco 5,5 · on-accent 5,5 · `--border-strong` 3,8.
+**Contrastes verificados (resumo, 2026-11-13)** — escuro: texto-primário/chat 13,7 · secundário 8,2 · muted sobre hover 4,8 · link/foco 7,5 · branco sobre acento 4,6 · acento sobre chat 3,5 · `--border-strong` 3,3. Claro: primário 17,9 · secundário 8,7 · muted sobre hover 5,6 · link 6,9 · branco sobre acento 5,8 · `--border-strong` 4,1.
 
 ### 3.2 Tipografia
 | Token | Tamanho/linha | Uso |
@@ -131,7 +131,7 @@ Todo componente interativo implementa: `default · hover · focus-visible · act
 Tile **quadrado arredondado** (`--radius-lg`) 48 px — *não* círculo→quadrado. Ativo: anel de 2 px `--accent` + fundo com gradiente sutil. Não lida: **ponto** abaixo do tile (não a barra lateral). Menções: *badge* `--mention-bg` no canto inferior direito com número (99+). Pastas de servidores: agrupam tiles com contorno. *Tooltip* à direita (atraso 300 ms) **e** `aria-label`.
 
 ### 6.2 Lista de canais
-Ícone por tipo (texto `#`, voz alto-falante, anúncio megafone, fórum balões, mídia imagem, stage palco, thread ramificação, privado cadeado). Estados: normal · hover (`--bg-hover`) · **selecionado** (`--bg-selected` + barra de 3 px `--accent` à esquerda + texto primário) · **não lido** (texto primário + peso 600 + ponto) · **silenciado** (texto muted, ícone riscado) · **mencionado** (badge). Canal de voz mostra participantes aninhados (avatar 24 px, nome, ícones mudo/ensurdecido/transmitindo). Categorias recolhíveis (`aria-expanded`), arrastar para reordenar com alternativa por teclado.
+Ícone por tipo (texto `#`, voz alto-falante, anúncio megafone, fórum balões, mídia imagem, stage palco, thread ramificação, privado cadeado). Estados: normal · hover (`--bg-hover`) · **selecionado** (`--bg-selected` + texto primário com peso 500; sem barra lateral) · normal em `--text-muted`, hover em `--text-secondary` · **não lido** (texto primário + peso 600 + ponto) · **silenciado** (texto muted, ícone riscado) · **mencionado** (badge). Canal de voz mostra participantes aninhados (avatar 24 px, nome, ícones mudo/ensurdecido/transmitindo). Categorias recolhíveis (`aria-expanded`), arrastar para reordenar com alternativa por teclado.
 
 ### 6.3 Mensagem
 - **Aconchegante:** avatar 40 px, nome (500) + cargo-cor + hora (`--text-xs`, muted) na 1ª linha; texto `--text-base`.

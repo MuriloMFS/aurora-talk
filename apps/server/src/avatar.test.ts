@@ -112,3 +112,46 @@ describe("foto de perfil", () => {
     expect((await fetch(`${base}/api/files/..%2F..%2Fetc`)).status).toBe(404);
   });
 });
+
+describe("imagem do servidor", () => {
+  it("quem gerencia o servidor troca e tira; todos ficam sabendo; quem não pode recebe 403; excluir o servidor apaga a imagem", async () => {
+    const reg = (u: string) => api<AuthResponse>("POST", "/api/auth/register", undefined, { username: u, password: "senha-forte-1" }).then((r) => r.data);
+    const [dona, membro] = await Promise.all([reg("dona8"), reg("membro8")]);
+    const guild = (await api<Guild>("POST", "/api/guilds", dona.token, { name: "Com imagem" })).data;
+    expect(guild.icon).toBeNull();
+    const invite = (await api<Invite>("POST", `/api/guilds/${guild.id}/invites`, dona.token)).data;
+    await api("POST", `/api/invites/${invite.code}`, membro.token);
+    const { client: membroWs } = await GatewayTestClient.identify(base, membro.token, 2);
+    const put = (token: string, bytes: Uint8Array) =>
+      fetch(`${base}/api/guilds/${guild.id}/icon`, { method: "PUT", headers: { Authorization: `Bearer ${token}`, "Content-Type": "image/png" }, body: bytes });
+
+    expect((await put(membro.token, PNG)).status).toBe(403);
+    expect((await put(dona.token, EXE)).status).toBe(415);
+    const res = await put(dona.token, PNG);
+    expect(res.status).toBe(200);
+    const icon = ((await res.json()) as { icon: string }).icon;
+    expect((await membroWs.event("GUILD_UPDATE")).d).toEqual({ id: guild.id, name: "Com imagem", icon, banner: null });
+    expect((await fetch(`${base}/api/files/${icon}`)).status).toBe(200);
+    // aparece para quem entra depois
+    expect((await api<Guild>("POST", `/api/invites/${invite.code}`, membro.token)).data.icon).toBe(icon);
+
+    const second = ((await (await put(dona.token, JPEG)).json()) as { icon: string }).icon;
+    expect((await fetch(`${base}/api/files/${icon}`)).status).toBe(404); // a antiga foi apagada
+    expect((await api<{ icon: null }>("DELETE", `/api/guilds/${guild.id}/icon`, dona.token)).data.icon).toBeNull();
+    expect((await fetch(`${base}/api/files/${second}`)).status).toBe(404);
+
+    const third = ((await (await put(dona.token, PNG)).json()) as { icon: string }).icon;
+    // capa: mesma regra, campo próprio
+    const banner = await fetch(`${base}/api/guilds/${guild.id}/banner`, { method: "PUT", headers: { Authorization: `Bearer ${dona.token}`, "Content-Type": "image/jpeg" }, body: JPEG });
+    const withBanner = (await banner.json()) as { icon: string; banner: string };
+    expect(withBanner.icon).toBe(third);
+    expect(withBanner.banner).toMatch(/^\d+$/);
+    expect((await fetch(`${base}/api/files/${withBanner.banner}`)).headers.get("content-type")).toBe("image/jpeg");
+    expect((await fetch(`${base}/api/guilds/${guild.id}/banner`, { method: "PUT", headers: { Authorization: `Bearer ${membro.token}`, "Content-Type": "image/png" }, body: PNG })).status).toBe(403);
+    expect(typeof (await api<Guild>("POST", `/api/invites/${invite.code}`, membro.token)).data.createdAt).toBe("number");
+    await api("DELETE", `/api/guilds/${guild.id}`, dona.token);
+    expect((await fetch(`${base}/api/files/${third}`)).status).toBe(404);
+    expect((await fetch(`${base}/api/files/${withBanner.banner}`)).status).toBe(404);
+    membroWs.close();
+  });
+});

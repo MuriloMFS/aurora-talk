@@ -4,6 +4,7 @@ import { LIMITS, normalizeChannelName, normalizeVoiceChannelName, type Channel, 
 import { ApiError, type ApiClient } from "../net/api";
 import { Modal } from "./Modal";
 import { SwitchRow } from "./settings/controls";
+import { GuildIconPicker } from "./GuildIconPicker";
 
 const message = (error: unknown) => (error instanceof ApiError ? error.message : "Algo deu errado. Tente de novo.");
 
@@ -79,16 +80,54 @@ function SingleFieldDialog(props: {
 }
 
 export function CreateGuildDialog({ api, onCreated, onClose }: { api: ApiClient; onCreated: (guild: Guild) => void; onClose: () => void }) {
+  const [name, setName] = useState("");
+  const [icon, setIcon] = useState<Blob | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const nameId = useId();
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const guild = await api.createGuild(name.trim());
+      let created = guild;
+      if (icon) {
+        // o servidor já existe: se a imagem falhar, ele fica com as iniciais e dá para pôr depois
+        created = await api.uploadGuildImage(guild.id, "icon", icon).then((r) => ({ ...guild, icon: r.icon })).catch(() => guild);
+      }
+      onCreated(created);
+      onClose();
+    } catch (caught) {
+      setError(message(caught));
+      setBusy(false);
+    }
+  };
   return (
-    <SingleFieldDialog
-      title="Criar servidor"
-      description="Um servidor é onde você e seus amigos conversam. Ele já vem com o canal #geral."
-      label="Nome do servidor"
-      submitLabel="Criar"
-      maxLength={LIMITS.guildNameMax}
-      onSubmit={async (name) => onCreated(await api.createGuild(name))}
-      onClose={onClose}
-    />
+    <Modal title="Criar servidor" description="Um servidor é onde você e seus amigos conversam. Ele já vem com o canal #geral." onClose={onClose}>
+      <form className="form" onSubmit={submit}>
+        <GuildIconPicker name={name} current={null} onPick={(image) => setIcon(image)} />
+        <div className="field">
+          <label className="field__label" htmlFor={nameId}>
+            Nome do servidor
+          </label>
+          <input id={nameId} className="input" value={name} maxLength={LIMITS.guildNameMax} onChange={(e) => setName(e.target.value)} autoFocus required />
+        </div>
+        {error && (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="modal__actions">
+          <button type="button" className="button button--secondary" onClick={onClose}>
+            Cancelar
+          </button>
+          <button type="submit" className="button button--primary" disabled={busy || name.trim().length < LIMITS.guildNameMin}>
+            {busy ? "Aguarde…" : "Criar"}
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 

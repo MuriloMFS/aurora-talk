@@ -66,8 +66,9 @@ describe("canais de voz", () => {
 
     expect((await api("POST", `/api/channels/${voice.id}/voice`, estranho.token)).status).toBe(404);
     expect((await api("POST", `/api/channels/${text.id}/voice`, ana.token)).status).toBe(400);
-    expect((await api("GET", `/api/channels/${voice.id}/messages`, ana.token)).status).toBe(400);
-    expect((await api("POST", `/api/channels/${voice.id}/messages`, ana.token, { content: "oi" })).status).toBe(400);
+    // 1.13: a sala de voz também tem chat
+    expect((await api("GET", `/api/channels/${voice.id}/messages`, ana.token)).status).toBe(200);
+    expect((await api("POST", `/api/channels/${voice.id}/messages`, ana.token, { content: "oi" })).status).toBe(201);
   });
 
   it("dono cria canal de voz mantendo espaços e maiúsculas", async () => {

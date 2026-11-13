@@ -201,7 +201,7 @@ describe("configurações do servidor", () => {
     expect((await api("DELETE", `/api/channels/${sala.id}`, ana.token)).status).toBe(204);
     expect((await dudaWs.event("CHANNEL_DELETE")).d).toEqual({ id: sala.id, guildId: guild.id });
     expect((await api<{ name: string }>("PATCH", `/api/guilds/${guild.id}`, ana.token, { name: "Turma do sábado" })).data.name).toBe("Turma do sábado");
-    expect((await dudaWs.event("GUILD_UPDATE")).d).toEqual({ id: guild.id, name: "Turma do sábado" });
+    expect((await dudaWs.event("GUILD_UPDATE")).d).toEqual({ id: guild.id, name: "Turma do sábado", icon: null, banner: null });
     dudaWs.close();
   });
 
