@@ -178,6 +178,10 @@
   --settings-content-max: 740px;
   --site-max-width: 1200px;
   --stream-tile-min: 320px;
+  /* QR code: escuro sobre claro nos dois temas (os leitores de QR precisam disso) */
+  --qr-dark: #000000;
+  --qr-light: #ffffff;
+  --qr-size: 192px;
   /* anexos (guia visual §6.3: miniatura até ~400×300) */
   --media-max-width: 400px;
   --media-max-height: 300px;

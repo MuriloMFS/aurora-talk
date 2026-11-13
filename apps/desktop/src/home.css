@@ -386,3 +386,94 @@ button.userpanel__identity:focus-visible {
   font-size: var(--text-lg);
   line-height: 1;
 }
+
+/* ---------- segurança da conta ---------- */
+.security-state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--text-secondary);
+  font-weight: var(--weight-medium);
+}
+.security-state--on {
+  color: var(--text-primary);
+}
+.security-state--on svg {
+  color: var(--success);
+}
+.security-prompt {
+  max-width: var(--modal-width-sm);
+}
+.totp-setup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.totp-setup__steps {
+  margin: 0;
+  padding-left: var(--space-6);
+  color: var(--text-secondary);
+}
+.totp-setup__key {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+/* códigos: fonte mono, sem o "3x4 → 3×4" automático da fonte da interface */
+.input--code,
+.mono-code {
+  font-family: var(--font-mono);
+  font-feature-settings: "calt" 0;
+}
+.totp-setup__code {
+  max-width: calc(var(--space-10) * 2);
+  font-family: var(--font-mono);
+  letter-spacing: var(--tracking-caps);
+}
+.qr {
+  width: var(--qr-size);
+  height: var(--qr-size);
+  border-radius: var(--radius-md);
+}
+.qr__light {
+  fill: var(--qr-light);
+}
+.qr__dark {
+  fill: var(--qr-dark);
+}
+.recovery-codes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.recovery-codes__list {
+  display: grid;
+  grid-template-columns: repeat(2, max-content);
+  gap: var(--space-3) var(--space-9);
+  margin: 0;
+  padding: var(--space-4) var(--space-5);
+  list-style: none;
+  border: var(--border-width) solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+.auth__help {
+  margin: var(--space-3) 0 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+@media (max-width: 599px) {
+  .recovery-codes__list {
+    grid-template-columns: max-content;
+  }
+}
+@media (forced-colors: active) {
+  .qr__light {
+    fill: Canvas;
+  }
+  .qr__dark {
+    fill: CanvasText;
+  }
+}

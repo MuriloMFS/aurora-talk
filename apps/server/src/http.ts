@@ -41,6 +41,7 @@ import {
   type Guild,
   type Relationship,
   type RelationshipType,
+  type SecurityInfo,
   type Id,
   type Message,
   type IceServer,
@@ -54,6 +55,7 @@ import { RateLimiter } from "./rate-limit.ts";
 import type { ServerChannel, Store } from "./store.ts";
 import { registerSiteRoutes } from "./site.ts";
 import { FileStore, cleanFilename, detectImageType, verifyAttachment } from "./files.ts";
+import { deviceName, hashRecoveryCode, looksLikeRecoveryCode, newRecoveryCodes, newTotpSecret, otpauthUri, verifyTotp } from "./security.ts";
 import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -62,7 +64,7 @@ import { nextId } from "./ids.ts";
 import type { IceServerSource } from "./turn.ts";
 import { registerUpdateRoutes } from "./updates.ts";
 
-export const SERVER_VERSION = "1.10.0";
+export const SERVER_VERSION = "1.11.0";
 
 export class HttpError extends Error {
   readonly status: number;
@@ -93,6 +95,7 @@ const contentField = z
   .max(LIMITS.messageMax, `A mensagem pode ter no máximo ${LIMITS.messageMax} caracteres.`);
 
 const registerBody = z.object({
+  device: z.string().max(80).optional(),
   username: usernameField,
   displayName: z.string().trim().min(1).max(LIMITS.displayNameMax, `O nome de exibição pode ter no máximo ${LIMITS.displayNameMax} caracteres.`).optional(),
   password: passwordField,
@@ -156,10 +159,24 @@ const dmCreateBody = z.object({
   name: z.string().trim().max(LIMITS.groupNameMax).optional(),
 });
 const groupNameBody = z.object({ name: z.string().trim().max(LIMITS.groupNameMax, `O nome do grupo pode ter no máximo ${LIMITS.groupNameMax} caracteres.`) });
+const deviceField = z.string().max(80).optional();
+const mfaCodeField = z.string().trim().max(20).optional();
 const loginBody = z.object({
   username: z.string().trim().toLowerCase().min(1, "Informe o usuário."),
   password: z.string().min(1, "Informe a senha."),
+  /** Código do app autenticador (ou de recuperação), quando a conta tem verificação em duas etapas. */
+  code: mfaCodeField,
+  device: deviceField,
 });
+const recoverBody = z.object({
+  username: z.string().trim().toLowerCase().min(1, "Informe o usuário."),
+  code: z.string().trim().min(1, "Informe um código de recuperação."),
+  newPassword: passwordField,
+  device: deviceField,
+});
+const passwordOnlyBody = z.object({ password: z.string().min(1, "Informe a sua senha.") });
+const totpEnableBody = z.object({ code: z.string().trim().min(1, "Digite o código do app autenticador.") });
+const totpDisableBody = z.object({ password: z.string().min(1, "Informe a sua senha."), code: z.string().trim().min(1, "Digite o código do app autenticador ou um código de recuperação.") });
 const guildBody = z.object({
   name: z
     .string()
@@ -220,13 +237,15 @@ interface Deps {
    * Só ligue com o servidor escutando em 127.0.0.1 (senão qualquer um na rede forja o cabeçalho).
    */
   trustCloudflare?: boolean;
+  /** Só para testes: tentativas por minuto de login (padrão 10 por IP) e de código (padrão 6 a cada 5 min por conta). */
+  limits?: { auth?: number; mfa?: number };
 }
 
 const VOICE_TOKEN_TTL = "6h";
 /** Quem foi movido e não trocou de sala (app antigo) sai da sala de mídia antiga depois disso. */
 const MOVE_GRACE_MS = 15_000;
 
-export async function buildApp({ store, gateway, logger = false, releasesDir, voice, turn, siteDir, filesDir, trustCloudflare = false }: Deps): Promise<FastifyInstance> {
+export async function buildApp({ store, gateway, logger = false, releasesDir, voice, turn, siteDir, filesDir, trustCloudflare = false, limits }: Deps): Promise<FastifyInstance> {
   const files = new FileStore(filesDir ?? join(mkdtempSync(join(tmpdir(), "aurora-files-")), "files"));
   /** Apaga anexos abandonados e os de mensagens/canais apagados (banco e disco). */
   const sweepFiles = async (now = Date.now()) => {
@@ -269,7 +288,7 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
   app.addHook("onClose", async () => clearInterval(sweepTimer));
   app.decorate("sweepFiles", sweepFiles);
 
-  const authLimiter = new RateLimiter(10, 60_000);
+  const authLimiter = new RateLimiter(limits?.auth ?? 10, 60_000);
   const messageLimiter = new RateLimiter(10, 10_000);
   const actionLimiter = new RateLimiter(30, 60_000);
   const reactionLimiter = new RateLimiter(20, 10_000);
@@ -305,6 +324,7 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     const tokenHash = hashToken(match[1]);
     const user = store.sessionUser(tokenHash);
     if (!user) throw new HttpError(401, "unauthorized", "Sessão inválida ou expirada. Entre novamente.");
+    store.touchSession(tokenHash);
     return { user, tokenHash };
   };
   /** IP de quem fez a requisição (o real, quando atrás do Cloudflare). */
@@ -463,10 +483,33 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     gateway.dispatchToUser(userId, { t: "GUILD_DELETE", d: { id: guildId } });
   };
 
-  const startSession = (user: User): AuthResponse => {
+  const startSession = (user: User, request: FastifyRequest, device?: string): AuthResponse => {
     const token = newSessionToken();
-    store.createSession(hashToken(token), user.id);
+    store.createSession(hashToken(token), user.id, deviceName(device, request.headers["user-agent"]));
     return { token, user };
+  };
+  const mfaLimiter = new RateLimiter(limits?.mfa ?? 6, 5 * 60_000);
+  const recoverLimiter = new RateLimiter(5, 15 * 60_000);
+  /**
+   * Segundo fator: código de 6 dígitos do app autenticador, ou um código de recuperação (gasto na hora).
+   * `true` se valeu.
+   */
+  const checkSecondFactor = (userId: Id, code: string): boolean => {
+    const totp = store.totpOf(userId);
+    if (totp.secret && /^\d{6}$/.test(code.replace(/\s/g, ""))) {
+      const step = verifyTotp(totp.secret, code.replace(/\s/g, ""), totp.lastStep);
+      return step !== null && store.useTotpStep(userId, step);
+    }
+    return looksLikeRecoveryCode(code) && store.useRecoveryCode(userId, hashRecoveryCode(code));
+  };
+  const requirePassword = async (userId: Id, password: string) => {
+    const hash = store.passwordHashOf(userId);
+    if (!hash || !(await verifyPassword(password, hash))) throw new HttpError(400, "invalid_password", "A senha está errada. Confira e tente de novo.");
+  };
+  const issueRecoveryCodes = (userId: Id): string[] => {
+    const codes = newRecoveryCodes();
+    store.replaceRecoveryCodes(userId, codes.map(hashRecoveryCode));
+    return codes;
   };
 
   /* ---------- rotas ---------- */
@@ -477,7 +520,7 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     const body = registerBody.parse(request.body);
     if (store.usernameExists(body.username)) throw new HttpError(409, "username_taken", "Esse nome de usuário já está em uso.");
     const user = store.createUser(body.username, body.displayName ?? body.username, await hashPassword(body.password));
-    return reply.status(201).send(startSession(user));
+    return reply.status(201).send(startSession(user, request, body.device));
   });
 
   app.post("/api/auth/login", async (request) => {
@@ -486,7 +529,100 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     const credentials = store.findCredentials(body.username);
     const ok = credentials ? await verifyPassword(body.password, credentials.passwordHash) : await verifyAgainstDummy(body.password);
     if (!credentials || !ok) throw new HttpError(401, "invalid_credentials", "Usuário ou senha incorretos.");
-    return startSession(credentials.user);
+    if (store.totpOf(credentials.user.id).secret) {
+      if (!body.code) throw new HttpError(401, "mfa_required", "Digite o código de 6 dígitos do seu app autenticador (ou um código de recuperação).");
+      limit(mfaLimiter, `mfa:${credentials.user.id}`);
+      if (!checkSecondFactor(credentials.user.id, body.code)) {
+        throw new HttpError(401, "mfa_invalid", "Código errado ou já usado. Confira o horário do celular e digite o código que está aparecendo agora.");
+      }
+    }
+    return startSession(credentials.user, request, body.device);
+  });
+
+  // Esqueci a senha: com um código de recuperação, troca a senha e desconecta todos os aparelhos.
+  app.post("/api/auth/recover", async (request) => {
+    limit(recoverLimiter, `recover:${clientIp(request)}`);
+    const body = recoverBody.parse(request.body ?? {});
+    limit(recoverLimiter, `recover-user:${body.username}`);
+    const credentials = store.findCredentials(body.username);
+    const fail = () => new HttpError(400, "recover_failed", "Usuário ou código de recuperação incorretos (ou o código já foi usado).");
+    if (!credentials || !looksLikeRecoveryCode(body.code)) throw fail();
+    if (!store.useRecoveryCode(credentials.user.id, hashRecoveryCode(body.code))) throw fail();
+    store.updatePassword(credentials.user.id, await hashPassword(body.newPassword));
+    for (const hash of store.deleteAllSessions(credentials.user.id)) gateway.closeSession(hash);
+    return startSession(credentials.user, request, body.device);
+  });
+
+  /* ---------- Minha conta → Segurança ---------- */
+  const securityOf = (userId: Id, currentHash: string): SecurityInfo => ({
+    totpEnabled: store.totpOf(userId).secret !== null,
+    recoveryCodesLeft: store.recoveryCodesLeft(userId),
+    sessions: store.sessionsOf(userId).map(({ tokenHash, ...s }) => ({ ...s, current: tokenHash === currentHash })),
+  });
+
+  app.get("/api/users/@me/security", async (request) => {
+    const { user, tokenHash } = authenticate(request);
+    return securityOf(user.id, tokenHash);
+  });
+
+  // Códigos novos (os antigos deixam de valer). Pede a senha: quem pegou o computador aberto não gera.
+  app.post("/api/users/@me/recovery-codes", async (request) => {
+    const { user } = authenticate(request);
+    limit(authLimiter, `security:${user.id}`);
+    await requirePassword(user.id, passwordOnlyBody.parse(request.body ?? {}).password);
+    return { recoveryCodes: issueRecoveryCodes(user.id) };
+  });
+
+  // Passo 1: segredo novo (fica pendente até confirmar com um código do app).
+  app.post("/api/users/@me/totp/setup", async (request) => {
+    const { user } = authenticate(request);
+    limit(authLimiter, `security:${user.id}`);
+    await requirePassword(user.id, passwordOnlyBody.parse(request.body ?? {}).password);
+    if (store.totpOf(user.id).secret) throw new HttpError(400, "already_enabled", "A verificação em duas etapas já está ligada.");
+    const secret = newTotpSecret();
+    store.setTotpPending(user.id, secret);
+    return { secret, uri: otpauthUri("Aurora", user.username, secret) };
+  });
+
+  // Passo 2: o código do app confirma que ficou certo; liga e entrega os códigos de recuperação.
+  app.post("/api/users/@me/totp/enable", async (request) => {
+    const { user } = authenticate(request);
+    limit(mfaLimiter, `mfa:${user.id}`);
+    const { code } = totpEnableBody.parse(request.body ?? {});
+    const { pending } = store.totpOf(user.id);
+    if (!pending) throw new HttpError(400, "no_setup", "Comece de novo: clique em ligar a verificação em duas etapas.");
+    const step = verifyTotp(pending, code.replace(/\s/g, ""), null);
+    if (step === null) throw new HttpError(400, "mfa_invalid", "Código errado. Confira se o horário do celular está certo e digite o código que está aparecendo agora.");
+    store.setTotpSecret(user.id, pending, step);
+    return { recoveryCodes: issueRecoveryCodes(user.id) };
+  });
+
+  app.post("/api/users/@me/totp/disable", async (request) => {
+    const { user } = authenticate(request);
+    limit(mfaLimiter, `mfa:${user.id}`);
+    const body = totpDisableBody.parse(request.body ?? {});
+    await requirePassword(user.id, body.password);
+    if (!store.totpOf(user.id).secret) return { ok: true };
+    if (!checkSecondFactor(user.id, body.code)) throw new HttpError(400, "mfa_invalid", "Código errado ou já usado.");
+    store.setTotpSecret(user.id, null);
+    return { ok: true };
+  });
+
+  // Desconectar um aparelho (o atual também vale: é como sair).
+  app.delete<{ Params: { sessionId: string } }>("/api/users/@me/sessions/:sessionId", async (request, reply) => {
+    const { user } = authenticate(request);
+    const session = store.sessionsOf(user.id).find((s) => s.id === request.params.sessionId);
+    if (!session) throw new HttpError(404, "not_found", "Esse aparelho já foi desconectado.");
+    store.deleteSession(session.tokenHash);
+    gateway.closeSession(session.tokenHash);
+    return reply.status(204).send();
+  });
+
+  // Desconectar todos os outros aparelhos.
+  app.delete("/api/users/@me/sessions", async (request, reply) => {
+    const { user, tokenHash } = authenticate(request);
+    for (const other of store.deleteOtherSessions(user.id, tokenHash)) gateway.closeSession(other);
+    return reply.status(204).send();
   });
 
   app.post("/api/auth/logout", async (request, reply) => {

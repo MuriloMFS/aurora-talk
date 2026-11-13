@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { prepareAvatar } from "../../avatar-image";
+import { SecuritySection } from "./SecuritySection";
 import { LIMITS, type User } from "@aurora/schema";
 import { ApiError, type ApiClient } from "../../net/api";
 import { Avatar } from "../shell";
@@ -21,6 +22,7 @@ export function AccountSection({ me, api, onUserUpdated, onLogout }: { me: User;
       <AvatarForm me={me} api={api} onUserUpdated={onUserUpdated} />
       <DisplayNameForm me={me} api={api} onUserUpdated={onUserUpdated} />
       <PasswordForm api={api} />
+      <SecuritySection api={api} onSignedOut={onLogout} />
       <SettingsGroup title="Sair" description="Encerra a sessão neste aparelho. Suas mensagens e servidores continuam na conta.">
         <div>
           <button type="button" className="button button--danger" onClick={onLogout}>

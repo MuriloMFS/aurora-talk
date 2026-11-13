@@ -129,6 +129,10 @@ CREATE TABLE IF NOT EXISTS relationships (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   target_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   type TEXT NOT NULL, since INTEGER NOT NULL, PRIMARY KEY (user_id, target_id));
+-- 1.11: códigos de recuperação (só o hash; cada um vale uma vez)
+CREATE TABLE IF NOT EXISTS recovery_codes (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  code_hash TEXT NOT NULL, used_at INTEGER, PRIMARY KEY (user_id, code_hash));
 CREATE TABLE IF NOT EXISTS channel_recipients (
   channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -281,6 +285,14 @@ export class Store {
     if (!userColumns.includes("dm_policy")) this.db.exec("ALTER TABLE users ADD COLUMN dm_policy TEXT NOT NULL DEFAULT 'servers'");
     // 1.10: status escolhido e status personalizado
     if (!userColumns.includes("status")) this.db.exec("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'online'");
+    // 1.11: verificação em duas etapas (segredo ativo, segredo esperando confirmação, último passo usado)
+    for (const column of ["totp_secret TEXT", "totp_pending TEXT", "totp_last_step INTEGER"]) {
+      if (!userColumns.includes(column.split(" ")[0]!)) this.db.exec(`ALTER TABLE users ADD COLUMN ${column}`);
+    }
+    // 1.11: aparelho e último uso de cada sessão
+    const sessionColumns = this.all<{ name: string }>("PRAGMA table_info(sessions)").map((c) => c.name);
+    if (!sessionColumns.includes("device")) this.db.exec("ALTER TABLE sessions ADD COLUMN device TEXT");
+    if (!sessionColumns.includes("last_seen")) this.db.exec("ALTER TABLE sessions ADD COLUMN last_seen INTEGER");
     for (const column of ["custom_text TEXT", "custom_emoji TEXT", "custom_expires INTEGER"]) {
       if (!userColumns.includes(column.split(" ")[0]!)) this.db.exec(`ALTER TABLE users ADD COLUMN ${column}`);
     }
@@ -393,8 +405,69 @@ export class Store {
     return row ? { user: toUser(row), passwordHash: row.password_hash } : undefined;
   }
 
-  createSession(tokenHash: string, userId: Id): void {
-    this.run("INSERT INTO sessions (token_hash, user_id, created_at) VALUES (?, ?, ?)", tokenHash, Number(userId), Date.now());
+  createSession(tokenHash: string, userId: Id, device: string | null = null): void {
+    const now = Date.now();
+    this.run("INSERT INTO sessions (token_hash, user_id, created_at, device, last_seen) VALUES (?, ?, ?, ?, ?)", tokenHash, Number(userId), now, device, now);
+  }
+
+  /** Último uso da sessão (gravado no máximo uma vez por minuto). */
+  touchSession(tokenHash: string, now = Date.now()): void {
+    this.run("UPDATE sessions SET last_seen = ? WHERE token_hash = ? AND (last_seen IS NULL OR last_seen < ?)", now, tokenHash, now - 60_000);
+  }
+
+  /** Aparelhos conectados, do uso mais recente para o mais antigo. O id é o começo do hash (não revela o token). */
+  sessionsOf(userId: Id): { id: string; tokenHash: string; device: string; createdAt: number; lastSeen: number | null }[] {
+    return this.all<{ token_hash: string; device: string | null; created_at: number; last_seen: number | null }>(
+      "SELECT token_hash, device, created_at, last_seen FROM sessions WHERE user_id = ? ORDER BY COALESCE(last_seen, created_at) DESC",
+      Number(userId),
+    ).map((r) => ({ id: r.token_hash.slice(0, 16), tokenHash: r.token_hash, device: r.device ?? "Aparelho conectado antes da 1.11", createdAt: r.created_at, lastSeen: r.last_seen }));
+  }
+
+  /** Encerra todas as sessões (senha recuperada). Devolve os hashes encerrados. */
+  deleteAllSessions(userId: Id): string[] {
+    const all = this.all<{ token_hash: string }>("SELECT token_hash FROM sessions WHERE user_id = ?", Number(userId)).map((r) => r.token_hash);
+    this.run("DELETE FROM sessions WHERE user_id = ?", Number(userId));
+    return all;
+  }
+
+  /* ---------- verificação em duas etapas e recuperação ---------- */
+
+  totpOf(userId: Id): { secret: string | null; pending: string | null; lastStep: number | null } {
+    const r = this.one<{ totp_secret: string | null; totp_pending: string | null; totp_last_step: number | null }>(
+      "SELECT totp_secret, totp_pending, totp_last_step FROM users WHERE id = ?",
+      Number(userId),
+    );
+    return { secret: r?.totp_secret ?? null, pending: r?.totp_pending ?? null, lastStep: r?.totp_last_step ?? null };
+  }
+
+  setTotpPending(userId: Id, secret: string | null): void {
+    this.run("UPDATE users SET totp_pending = ? WHERE id = ?", secret, Number(userId));
+  }
+
+  /** Liga (com o segredo confirmado) ou desliga (`null`). */
+  setTotpSecret(userId: Id, secret: string | null, lastStep: number | null = null): void {
+    this.run("UPDATE users SET totp_secret = ?, totp_pending = NULL, totp_last_step = ? WHERE id = ?", secret, lastStep, Number(userId));
+  }
+
+  /** Grava o passo usado só se for mais novo (evita aceitar o mesmo código em duas requisições ao mesmo tempo). */
+  useTotpStep(userId: Id, step: number): boolean {
+    return this.change("UPDATE users SET totp_last_step = ? WHERE id = ? AND (totp_last_step IS NULL OR totp_last_step < ?)", step, Number(userId), step) > 0;
+  }
+
+  replaceRecoveryCodes(userId: Id, hashes: readonly string[]): void {
+    this.transaction(() => {
+      this.run("DELETE FROM recovery_codes WHERE user_id = ?", Number(userId));
+      for (const hash of hashes) this.run("INSERT INTO recovery_codes (user_id, code_hash) VALUES (?, ?)", Number(userId), hash);
+    });
+  }
+
+  /** Gasta o código (se existir e ainda não tiver sido usado). */
+  useRecoveryCode(userId: Id, hash: string): boolean {
+    return this.change("UPDATE recovery_codes SET used_at = ? WHERE user_id = ? AND code_hash = ? AND used_at IS NULL", Date.now(), Number(userId), hash) > 0;
+  }
+
+  recoveryCodesLeft(userId: Id): number {
+    return this.one<{ n: number }>("SELECT COUNT(*) AS n FROM recovery_codes WHERE user_id = ? AND used_at IS NULL", Number(userId))?.n ?? 0;
   }
 
   sessionUser(tokenHash: string): User | undefined {

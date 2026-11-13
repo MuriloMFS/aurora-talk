@@ -29,7 +29,11 @@ O `pnpm release` para e não publica nada. Foi o que aconteceu com o 1.4.0: o mo
   ```powershell
   & "C:\ProgramData\Microsoft\Windows Defender\Platform\CurrentVersion\MpCmdRun.exe" -Scan -ScanType 3 -File <arquivo> -DisableRemediation
   ```
-- A solução de longo prazo é o certificado de assinatura de código: com ele, a reputação passa de uma versão para a outra.
+- **1.11.0 (2026-11-13):** passou na conferência ao publicar e foi acusada 30 minutos depois, quando o Defender atualizou o modelo (definições 1.463.279 → 1.463.283). Quem atualizou teve o `aurora.exe` posto em quarentena pela proteção em tempo real. Saiu a 1.11.1, gerada de novo, e a 1.11.0 foi tirada do servidor. Desde então o `pnpm release`:
+  - atualiza as definições do Defender antes de conferir;
+  - confere o instalador **e** o `aurora.exe` que vai dentro dele;
+  - grava "Aurora" como publicador no executável (antes aparecia "aurora").
+- Mesmo assim, nada garante que uma versão limpa hoje continue limpa amanhã: sem certificado, cada versão começa sem reputação. A solução de longo prazo é o certificado de assinatura de código: com ele, a reputação passa de uma versão para a outra.
 
 O instalador para quem ainda não tem o app fica em `apps/desktop/src-tauri/target/release/bundle/nsis/Aurora_<versão>_x64-setup.exe`.
 

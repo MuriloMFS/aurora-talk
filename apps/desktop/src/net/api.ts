@@ -1,4 +1,4 @@
-import type { ApiErrorBody, Attachment, DmChannel, Relationship, UserSettings, AuditLogEntry, AuthResponse, Ban, Channel, ChannelType, Guild, Id, Invite, InviteDetails, Message, Overwrite, Role, User, VoiceToken } from "@aurora/schema";
+import type { ApiErrorBody, Attachment, DmChannel, Relationship, SecurityInfo, UserSettings, AuditLogEntry, AuthResponse, Ban, Channel, ChannelType, Guild, Id, Invite, InviteDetails, Message, Overwrite, Role, User, VoiceToken } from "@aurora/schema";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -43,11 +43,37 @@ export class ApiClient {
     return data as T;
   }
 
-  register(username: string, password: string, displayName?: string) {
-    return this.request<AuthResponse>("POST", "/api/auth/register", { username, password, ...(displayName ? { displayName } : {}) });
+  register(username: string, password: string, displayName?: string, device?: string) {
+    return this.request<AuthResponse>("POST", "/api/auth/register", { username, password, ...(displayName ? { displayName } : {}), ...(device ? { device } : {}) });
   }
-  login(username: string, password: string) {
-    return this.request<AuthResponse>("POST", "/api/auth/login", { username, password });
+  /** `code`: do app autenticador ou de recuperação, quando a conta tem verificação em duas etapas. */
+  login(username: string, password: string, code?: string, device?: string) {
+    return this.request<AuthResponse>("POST", "/api/auth/login", { username, password, ...(code ? { code } : {}), ...(device ? { device } : {}) });
+  }
+  /** Esqueci a senha: troca usando um código de recuperação (desconecta todos os aparelhos). */
+  recover(username: string, code: string, newPassword: string, device?: string) {
+    return this.request<AuthResponse>("POST", "/api/auth/recover", { username, code, newPassword, ...(device ? { device } : {}) });
+  }
+  security() {
+    return this.request<SecurityInfo>("GET", "/api/users/@me/security");
+  }
+  newRecoveryCodes(password: string) {
+    return this.request<{ recoveryCodes: string[] }>("POST", "/api/users/@me/recovery-codes", { password });
+  }
+  totpSetup(password: string) {
+    return this.request<{ secret: string; uri: string }>("POST", "/api/users/@me/totp/setup", { password });
+  }
+  totpEnable(code: string) {
+    return this.request<{ recoveryCodes: string[] }>("POST", "/api/users/@me/totp/enable", { code });
+  }
+  totpDisable(password: string, code: string) {
+    return this.request<{ ok: true }>("POST", "/api/users/@me/totp/disable", { password, code });
+  }
+  endSession(sessionId: string) {
+    return this.request<void>("DELETE", `/api/users/@me/sessions/${encodeURIComponent(sessionId)}`);
+  }
+  endOtherSessions() {
+    return this.request<void>("DELETE", "/api/users/@me/sessions");
   }
   logout() {
     return this.request<void>("POST", "/api/auth/logout");

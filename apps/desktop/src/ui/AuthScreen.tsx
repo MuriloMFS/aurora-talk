@@ -1,9 +1,13 @@
 import { useId, useState, type FormEvent, type ReactNode } from "react";
 import { LIMITS } from "@aurora/schema";
+import { detectPlatformKind } from "@aurora/platform";
 import { ApiClient, ApiError } from "../net/api";
 import { IS_HOSTED, normalizeServerUrl, type Session } from "../net/session";
 
-type Mode = "login" | "register";
+type Mode = "login" | "register" | "recover";
+
+/** Como este aparelho aparece em Minha conta → Aparelhos conectados (no navegador, o servidor adivinha). */
+const deviceLabel = () => (detectPlatformKind() === "tauri" ? "Aurora para Windows" : undefined);
 
 /** Campo com rótulo e dica ligados explicitamente (nome acessível = rótulo; dica = descrição). */
 function Field({ label, hint, children }: { label: string; hint?: string; children: (ids: { id: string; describedBy?: string }) => ReactNode }) {
@@ -32,6 +36,9 @@ export function AuthScreen({ initialServerUrl, notice, onAuthenticated }: { init
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
+  /** Verificação em duas etapas: o servidor pediu o código depois da senha certa. */
+  const [needCode, setNeedCode] = useState(false);
+  const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const errorId = useId();
@@ -43,15 +50,34 @@ export function AuthScreen({ initialServerUrl, notice, onAuthenticated }: { init
     const url = normalizeServerUrl(serverUrl);
     const api = new ApiClient(url);
     try {
-      const result = mode === "login" ? await api.login(username, password) : await api.register(username, password, displayName.trim() || undefined);
+      const device = deviceLabel();
+      const result =
+        mode === "login"
+          ? await api.login(username, password, needCode ? code.trim() : undefined, device)
+          : mode === "recover"
+            ? await api.recover(username, code.trim(), password, device)
+            : await api.register(username, password, displayName.trim() || undefined, device);
       onAuthenticated({ serverUrl: url, token: result.token, user: result.user });
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "Algo deu errado. Tente de novo.");
+      if (caught instanceof ApiError && caught.code === "mfa_required") {
+        setNeedCode(true); // senha certa: agora o código do app autenticador
+        setError(null);
+      } else {
+        setError(caught instanceof ApiError ? caught.message : "Algo deu errado. Tente de novo.");
+      }
       setBusy(false);
     }
   };
+  const switchMode = (next: Mode) => {
+    setMode(next);
+    setError(null);
+    setNeedCode(false);
+    setCode("");
+    setPassword("");
+  };
 
   const isRegister = mode === "register";
+  const isRecover = mode === "recover";
   return (
     <main className="auth">
       <div className="auth__card">
@@ -65,12 +91,9 @@ export function AuthScreen({ initialServerUrl, notice, onAuthenticated }: { init
               key={value}
               type="button"
               role="tab"
-              aria-selected={mode === value}
+              aria-selected={mode === value || (value === "login" && isRecover)}
               className="auth__tab"
-              onClick={() => {
-                setMode(value);
-                setError(null);
-              }}
+              onClick={() => switchMode(value)}
             >
               {value === "login" ? "Entrar" : "Criar conta"}
             </button>
@@ -112,7 +135,33 @@ export function AuthScreen({ initialServerUrl, notice, onAuthenticated }: { init
               {({ id }) => <input id={id} className="input" value={displayName} onChange={(e) => setDisplayName(e.target.value)} maxLength={LIMITS.displayNameMax} autoComplete="nickname" />}
             </Field>
           )}
-          <Field label="Senha" hint={isRegister ? `Pelo menos ${LIMITS.passwordMin} caracteres.` : undefined}>
+          {isRecover && (
+            <Field label="Código de recuperação" hint="Um dos 10 códigos que você salvou ao ligar a verificação em duas etapas (cada um vale uma vez).">
+              {({ id, describedBy }) => (
+                <input id={id} aria-describedby={describedBy} className="input input--code" value={code} onChange={(e) => setCode(e.target.value)} autoComplete="one-time-code" spellCheck={false} placeholder="xxxxx-xxxxx" required />
+              )}
+            </Field>
+          )}
+          {needCode && !isRecover ? (
+            <Field label="Código de verificação" hint="Os 6 dígitos que aparecem agora no seu app autenticador. Perdeu o celular? Use um código de recuperação.">
+              {({ id, describedBy }) => (
+                <input
+                  id={id}
+                  aria-describedby={describedBy}
+                  className="input input--code"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  autoComplete="one-time-code"
+                  inputMode="text"
+                  spellCheck={false}
+                  maxLength={20}
+                  autoFocus
+                  required
+                />
+              )}
+            </Field>
+          ) : (
+          <Field label={isRecover ? "Senha nova" : "Senha"} hint={isRegister || isRecover ? `Pelo menos ${LIMITS.passwordMin} caracteres.` : undefined}>
             {({ id, describedBy }) => (
               <input
                 id={id}
@@ -121,13 +170,14 @@ export function AuthScreen({ initialServerUrl, notice, onAuthenticated }: { init
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                autoComplete={isRegister ? "new-password" : "current-password"}
-                minLength={isRegister ? LIMITS.passwordMin : 1}
+                autoComplete={isRegister || isRecover ? "new-password" : "current-password"}
+                minLength={isRegister || isRecover ? LIMITS.passwordMin : 1}
                 maxLength={LIMITS.passwordMax}
                 required
               />
             )}
           </Field>
+          )}
 
           {error && (
             <p id={errorId} className="form-error" role="alert">
@@ -135,9 +185,20 @@ export function AuthScreen({ initialServerUrl, notice, onAuthenticated }: { init
             </p>
           )}
           <button type="submit" className="button button--primary button--block" disabled={busy}>
-            {busy ? "Aguarde…" : isRegister ? "Criar conta" : "Entrar"}
+            {busy ? "Aguarde…" : isRegister ? "Criar conta" : isRecover ? "Trocar senha e entrar" : needCode ? "Confirmar" : "Entrar"}
           </button>
         </form>
+        {mode === "login" && !needCode && (
+          <button type="button" className="button button--ghost button--small auth__advanced" onClick={() => switchMode("recover")}>
+            Esqueci a senha
+          </button>
+        )}
+        {(isRecover || needCode) && (
+          <button type="button" className="button button--ghost button--small auth__advanced" onClick={() => switchMode("login")}>
+            Voltar
+          </button>
+        )}
+        {isRecover && <p className="auth__help">Sem código de recuperação não dá para recuperar a conta: o Aurora não guarda seu e-mail.</p>}
         {!showServer && (
           <button type="button" className="button button--ghost button--small auth__advanced" onClick={() => setShowServer(true)}>
             Usar outro servidor

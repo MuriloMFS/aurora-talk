@@ -194,6 +194,24 @@ export interface AuthResponse {
   user: User;
 }
 
+/** Aparelho conectado à conta (Minha conta → Segurança). */
+export interface SessionInfo {
+  id: string;
+  device: string;
+  createdAt: number;
+  lastSeen: number | null;
+  /** É esta sessão (o aparelho que está olhando). */
+  current: boolean;
+}
+
+export interface SecurityInfo {
+  /** Verificação em duas etapas ligada. */
+  totpEnabled: boolean;
+  /** Códigos de recuperação ainda não usados. */
+  recoveryCodesLeft: number;
+  sessions: SessionInfo[];
+}
+
 export interface Invite {
   code: string;
   guildId: Id;

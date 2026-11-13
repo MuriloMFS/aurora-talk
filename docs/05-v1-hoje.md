@@ -133,6 +133,11 @@
   - Ausente automático depois de X minutos sem mexer no computador (no app, o Windows informa o tempo; ajuste em Minha conta). Com mais de um aparelho, só fica ausente quando todos estão parados.
   - Não perturbe: sem som, notificação nem ícone piscando; o número de menções continua. Invisível: aparece offline para todos.
   - Status e personalizado aparecem na lista de membros, nos amigos e nas conversas diretas, com forma e texto (não só cor).
+- **1.11.0** — **segurança da conta** (fase E do [10](10-recursos-basicos.md)):
+  - Verificação em duas etapas com app autenticador (TOTP, RFC 6238): QR code ou chave, confirmação com um código, e o login passa a pedir os 6 dígitos. Código repetido não vale; tentativas limitadas.
+  - 10 códigos de recuperação (uso único, mostrados uma vez): entram sem o celular e trocam a senha esquecida ("Esqueci a senha" na tela de login), desconectando todos os aparelhos.
+  - Aparelhos conectados: nome, quando entrou e último uso; desconectar um ou todos os outros (cai na hora).
+  - Sem e-mail por enquanto: a recuperação depende dos códigos.
 
 ## O que fica para depois (ordem sugerida)
 escolha de microfone/fone · DMs e amigos · anexos e prévia de links · cargos e permissões (pacote `permissions` do doc 03) · lista virtualizada para canais grandes · servidor hospedado (VPS) com HTTPS · depois, o restante do roadmap.

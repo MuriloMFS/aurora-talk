@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Aurora",
-  "version": "1.10.0",
+  "version": "1.11.1",
   "identifier": "app.aurora.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -44,6 +44,7 @@
     "targets": ["nsis", "msi"],
     "shortDescription": "Aurora — comunidades, chat e voz",
     "copyright": "© 2026 Aurora (nome provisório)",
+    "publisher": "Aurora",
     "category": "SocialNetworking",
     "icon": [
       "icons/32x32.png",

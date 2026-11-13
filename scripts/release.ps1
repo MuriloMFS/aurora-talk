@@ -53,13 +53,21 @@ $MpCmdRun = @(
   (Join-Path $env:ProgramFiles 'Windows Defender\MpCmdRun.exe')
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 if ($MpCmdRun) {
-  Write-Host 'Conferindo o instalador com o Microsoft Defender...'
-  $Scan = & $MpCmdRun -Scan -ScanType 3 -File (Join-Path $Bundle $Setup) -DisableRemediation 2>&1 | ForEach-Object { "$_" }
-  $Threat = $Scan | Select-String -Pattern '^\s*Threat\s*:' | Select-Object -First 1
-  if ($Threat) {
-    throw ("O Defender acusou o instalador ($($Threat.Line.Trim())). Nada foi publicado. " +
-      'Quase sempre e falso positivo de app novo sem certificado: aumente a versao (tauri.conf.json, Cargo.toml, package.json), ' +
-      'gere de novo e, se continuar, envie o arquivo para analise em https://www.microsoft.com/wdsi/filesubmission')
+  # O modelo do Defender muda varias vezes por dia (a 1.11.0 passou e foi acusada 30 min depois):
+  # confere com as definicoes mais novas, e confere tambem o aurora.exe que vai dentro do instalador
+  # (foi ele que o Defender apagou de quem atualizou).
+  Write-Host 'Atualizando as definicoes do Defender...'
+  & $MpCmdRun -SignatureUpdate 2>&1 | Out-Null
+  $Targets = @((Join-Path $Bundle $Setup), (Join-Path $Root 'apps\desktop\src-tauri\target\release\aurora.exe'))
+  foreach ($Target in $Targets) {
+    Write-Host "Conferindo $(Split-Path $Target -Leaf) com o Microsoft Defender..."
+    $Scan = & $MpCmdRun -Scan -ScanType 3 -File $Target -DisableRemediation 2>&1 | ForEach-Object { "$_" }
+    $Threat = $Scan | Select-String -Pattern '^\s*Threat\s*:' | Select-Object -First 1
+    if ($Threat) {
+      throw ("O Defender acusou $(Split-Path $Target -Leaf) ($($Threat.Line.Trim())). Nada foi publicado. " +
+        'Quase sempre e falso positivo de app novo sem certificado: aumente a versao (tauri.conf.json, Cargo.toml, package.json), ' +
+        'gere de novo e, se continuar, envie o arquivo para analise em https://www.microsoft.com/wdsi/filesubmission')
+    }
   }
   Write-Host 'Defender: nenhuma ameaca encontrada.'
 } else {

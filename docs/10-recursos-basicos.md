@@ -91,6 +91,8 @@ A base de tudo que envolve upload. Começa pela foto de perfil, que é o caso ma
 
 - **Fase D entregue na 1.10.0** (2026-11-13): 4 testes no servidor (ausente só com todos os aparelhos parados; não perturbe e personalizado ao vivo e nos outros aparelhos; invisível offline também para amigos; personalizado que vence sozinho e validação) e conferência visual (menu de status, personalizado com emoji, lista de membros e amigos nos dois temas).
 
+- **Fase E entregue na 1.11.0** (2026-11-13), sem e-mail: TOTP conferido com os vetores oficiais das RFC 4226 e 6238; 6 testes de ponta a ponta no servidor (aparelhos, ligar com confirmação, login com código e com código de recuperação, código repetido, esqueci a senha, desligar, limite de tentativas) e o fluxo inteiro pela tela (ligar com QR, códigos, sair e entrar com código, esqueci a senha).
+
 ## Decisões que precisam de você
 1. **Provedor de e-mail** (fase E): sem um, a recuperação é só por códigos. Opções: um serviço de envio
    transacional (exige domínio verificado, ex.: o muriloferreira.dev) ou deixar sem e-mail por enquanto.
