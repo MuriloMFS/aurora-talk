@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { LIMITS, type Channel, type ChannelType, type DispatchEvent, type Id, type Message, type User } from "@aurora/schema";
+import { LIMITS, hasPermission, outranks, type Channel, type ChannelType, type DispatchEvent, type Id, type Message, type User } from "@aurora/schema";
 import type { ThemePreference } from "@aurora/ui/theme";
 import {
   createMediaEngine,
@@ -15,7 +15,8 @@ import {
 import { ApiClient, ApiError } from "./net/api";
 import { GatewayClient } from "./net/gateway";
 import type { Session } from "./net/session";
-import { createChatStore, isUnread, mentionCountOf, useChatState, type ChatState } from "./state/chat-store";
+import { createChatStore, isUnread, mentionCountOf, myChannelPermissions, myPermissions, myTimeout, useChatState, type ChatState } from "./state/chat-store";
+import { untilText } from "./roles";
 import { plainText } from "./markdown";
 import { ChatPane } from "./ui/ChatPane";
 import { CreateChannelDialog, CreateGuildDialog, InviteDialog, JoinGuildDialog } from "./ui/dialogs";
@@ -24,6 +25,7 @@ import { ScreenShareDialog } from "./ui/ScreenShareDialog";
 import { StreamStage } from "./ui/StreamStage";
 import { UpdateButton } from "./ui/update";
 import { SettingsScreen, type SettingsSectionId } from "./ui/settings/SettingsScreen";
+import { GuildSettingsScreen } from "./ui/settings/GuildSettingsScreen";
 import { SoundPlayer, voiceEventSound, type SoundId } from "./sounds";
 import { settingsStore, useSettings, type AppSettings } from "./state/settings";
 import { voiceSettingsOf } from "./voice-settings";
@@ -115,6 +117,14 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
   const playSound = useCallback((id: SoundId) => settingsStore.get().sounds.enabled[id] && sounds.play(id), [sounds]);
   const [settingsOpen, setSettingsOpen] = useState<SettingsSectionId | null>(null);
   const closeSettings = useCallback(() => setSettingsOpen(null), []);
+  const [guildSettingsOpen, setGuildSettingsOpen] = useState<Id | null>(null);
+  const closeGuildSettings = useCallback(() => setGuildSettingsOpen(null), []);
+  /** Servidores que EU estou saindo/excluindo (o GUILD_DELETE deles não vira aviso de "você foi removido"). */
+  const leavingRef = useRef(new Set<Id>());
+  const leaveVoiceRef = useRef<() => Promise<void>>(async () => {});
+  /** Um moderador me levou para outra sala: troca sem avisar "saí" (o servidor já me pôs lá). */
+  const moveVoiceRef = useRef<(channelId: Id, guildId: Id) => Promise<void>>(async () => {});
+  const [chatNotice, setChatNotice] = useState<string | null>(null);
 
   // ---- plataforma (notificações, selo, links) ----
   const portRef = useRef<PlatformPort | null>(null);
@@ -162,6 +172,21 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
           if (sound) playSound(sound);
         }
         notifyIfMentioned(store.getState(), event, portRef.current, settingsStore.get(), playSound);
+        if (event.t === "VOICE_MOVE" && voiceRef.current?.guildId === event.d.guildId) {
+          if (event.d.channelId === null) {
+            void leaveVoiceRef.current();
+            setVoiceError("Um moderador tirou você da voz. Para voltar, entre de novo na sala.");
+          } else if (event.d.channelId !== voiceRef.current.channelId) {
+            void moveVoiceRef.current(event.d.channelId, event.d.guildId);
+          }
+        }
+        // saí do servidor, ele foi excluído, ou fui expulso/banido
+        const gone = event.t === "GUILD_DELETE" ? event.d.id : event.t === "MEMBER_REMOVE" && event.d.userId === before.me?.id ? event.d.guildId : null;
+        if (gone && before.guilds[gone]) {
+          if (voiceRef.current?.guildId === gone) void leaveVoiceRef.current();
+          setGuildSettingsOpen((open) => (open === gone ? null : open));
+          if (!leavingRef.current.delete(gone)) setChatNotice(`Você não está mais em “${before.guilds[gone]!.name}”: o servidor foi excluído ou você foi removido.`);
+        }
       },
       onInvalidSession: () => onLogout("Sua sessão expirou. Entre novamente."),
     });
@@ -228,8 +253,7 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
     portRef.current?.setBadge(badgeOn ? totalMentions : 0).catch(() => undefined);
   }, [totalMentions, platform, badgeOn]);
 
-  // ---- avisos rápidos do chat (ex.: reação recusada) ----
-  const [chatNotice, setChatNotice] = useState<string | null>(null);
+  // ---- avisos rápidos do chat (ex.: reação recusada): `chatNotice`, declarado lá em cima ----
 
   /** Reagir/tirar reação: aparece na hora; se o servidor recusar, desfaz e explica. */
   const toggleReaction = (message: Message, emoji: string) => {
@@ -287,23 +311,29 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
   }, [api, store, channelId, state.status, bucket?.loaded, historyAttempt]);
 
   // ---- ações de voz ----
-  const leaveVoice = useCallback(async () => {
-    const engine = engineRef.current;
-    if (voiceRef.current) playSound("voiceDisconnect");
-    setVoice(null);
-    setSpeaking(NO_SPEAKERS);
-    setScreenShares([]);
-    setStageOpen(false);
-    gatewayRef.current?.sendVoiceLeave();
-    await engine?.leave();
-  }, [playSound]);
+  const leaveVoice = useCallback(
+    async (options: { moved?: boolean } = {}) => {
+      const engine = engineRef.current;
+      if (voiceRef.current && !options.moved) playSound("voiceDisconnect");
+      setVoice(null);
+      setSpeaking(NO_SPEAKERS);
+      setScreenShares([]);
+      setStageOpen(false);
+      if (!options.moved) gatewayRef.current?.sendVoiceLeave();
+      await engine?.leave();
+    },
+    [playSound],
+  );
+  leaveVoiceRef.current = () => leaveVoice();
 
   const joinVoice = useCallback(
-    async (voiceChannelId: Id, voiceGuildId: Id) => {
+    async (voiceChannelId: Id, voiceGuildId: Id, options: { moved?: boolean } = {}) => {
       if (voiceRef.current?.channelId === voiceChannelId) return;
-      if (voiceRef.current) await leaveVoice();
+      if (voiceRef.current) await leaveVoice(options);
       setVoiceError(null);
-      const session: VoiceSession = { channelId: voiceChannelId, guildId: voiceGuildId, status: "connecting", muted: false, deafened: false, streaming: false };
+      // sem "Falar" nesta sala, entra mutado (e o botão do microfone fica bloqueado)
+      const muted = !hasPermission(myChannelPermissions(store.getState(), voiceChannelId), "SPEAK");
+      const session: VoiceSession = { channelId: voiceChannelId, guildId: voiceGuildId, status: "connecting", muted, deafened: false, streaming: false };
       setVoice(session);
       voiceRef.current = session;
       try {
@@ -320,10 +350,10 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
             onSpeakingChange: setSpeaking,
             onScreenSharesChange: setScreenShares,
           },
-          { muted: false, deafened: false, voice: voiceSettingsOf(settingsStore.get().voice) },
+          { muted, deafened: false, voice: voiceSettingsOf(settingsStore.get().voice) },
         );
         if (voiceRef.current?.channelId !== voiceChannelId) return; // saiu enquanto conectava
-        gatewayRef.current?.sendVoiceJoin(voiceChannelId, false, false);
+        gatewayRef.current?.sendVoiceJoin(voiceChannelId, muted, false);
         playSound("voiceConnect");
         setVoice((current) => (current && current.channelId === voiceChannelId ? { ...current, status: "connected" } : current));
       } catch (error) {
@@ -332,8 +362,9 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
         setVoiceError(voiceErrorMessage(error));
       }
     },
-    [api, leaveVoice, playSound],
+    [api, leaveVoice, playSound, store],
   );
+  moveVoiceRef.current = (channelId, guildId) => joinVoice(channelId, guildId, { moved: true });
 
   // Microfone, alto-falante, volumes e tratamento mudados nas configurações valem na hora, na chamada.
   const voiceSettingsKey = JSON.stringify(voiceSettingsOf(settings.voice));
@@ -399,7 +430,39 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
   };
 
   // Ensurdecer também desliga o microfone; ligar o microfone tira o ensurdecer.
-  const toggleMute = () => voiceRef.current && void updateVoiceFlags(!voiceRef.current.muted, voiceRef.current.muted ? false : voiceRef.current.deafened);
+  const voicePermissions = voice ? myChannelPermissions(state, voice.channelId) : 0;
+  const serverMuted = Boolean(voice && state.me && state.voice[voice.guildId]?.[state.me.id]?.serverMuted);
+  const toggleMute = () => {
+    const current = voiceRef.current;
+    if (!current) return;
+    if (current.muted && (!hasPermission(voicePermissions, "SPEAK") || serverMuted)) return; // sem "Falar" ou silenciado, o microfone fica desligado
+    void updateVoiceFlags(!current.muted, current.muted ? false : current.deafened);
+  };
+  // Perdeu uma permissão de voz no meio da chamada (cargo mudou): aplica na hora.
+  const canConnect = hasPermission(voicePermissions, "CONNECT");
+  const canSpeakNow = hasPermission(voicePermissions, "SPEAK");
+  const canStreamNow = hasPermission(voicePermissions, "STREAM");
+  useEffect(() => {
+    const current = voiceRef.current;
+    if (!current || current.status === "connecting") return;
+    if (!canConnect) {
+      void leaveVoice();
+      const until = myTimeout(store.getState(), current.guildId);
+      setVoiceError(until ? `Você está de castigo ${untilText(until)} e saiu da voz. Até lá, dá para ler, mas não falar.` : "Você não tem mais permissão para usar esta sala de voz.");
+      return;
+    }
+    if ((!canSpeakNow || serverMuted) && !current.muted) void updateVoiceFlags(true, current.deafened);
+    if (!canStreamNow && current.streaming) void engineRef.current?.stopScreenShare();
+  }, [canConnect, canSpeakNow, canStreamNow, serverMuted]); // reage só quando a permissão muda
+
+  // Castigo acaba sozinho: redesenha na hora em que termina (o servidor já libera pelo relógio dele).
+  const [, setClockTick] = useState(0);
+  const nextTimeoutEnd = Math.min(...Object.keys(state.guilds).map((id) => myTimeout(state, id) ?? Number.POSITIVE_INFINITY));
+  useEffect(() => {
+    if (!Number.isFinite(nextTimeoutEnd)) return;
+    const timer = window.setTimeout(() => setClockTick((n) => n + 1), Math.min(nextTimeoutEnd - Date.now() + 50, 2 ** 31 - 1));
+    return () => clearTimeout(timer);
+  }, [nextTimeoutEnd]);
   const toggleDeafen = () => voiceRef.current && void updateVoiceFlags(!voiceRef.current.deafened, !voiceRef.current.deafened);
 
   // ---- atalhos de teclado (Configurações → Atalhos de teclado) ----
@@ -484,6 +547,18 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
   const unreadGuildIds = new Set(guilds.filter((g) => g.channelIds.some((id) => unreadChannels.has(id))).map((g) => g.id));
   const guildMentions = Object.fromEntries(guilds.map((g) => [g.id, g.channelIds.reduce((sum, id) => sum + (channelMentions[id] ?? 0), 0)]));
   const membersById = guild ? (state.members[guild.id] ?? {}) : {};
+  const guildPermissions = guild ? myPermissions(state, guild.id) : 0;
+  const channelPermissions = channel ? myChannelPermissions(state, channel.id) : 0;
+  const timeoutUntil = guild ? myTimeout(state, guild.id) : null;
+  const guildCtx = guild ? { guildId: guild.id, ownerId: guild.ownerId, roles: guild.roles } : null;
+  const voiceModeration = (userId: Id, voiceChannelId: Id) => {
+    const target = guild ? state.members[guild.id]?.[userId] : undefined;
+    const mine = state.me && guild ? state.members[guild.id]?.[state.me.id] : undefined;
+    if (!guildCtx || !target || !state.me) return { canMute: false, canMove: false };
+    const above = outranks(guildCtx, { userId: state.me.id, roleIds: mine?.roles ?? [] }, { userId, roleIds: target.roles });
+    const perms = myChannelPermissions(state, voiceChannelId);
+    return { canMute: above && hasPermission(perms, "MUTE_MEMBERS"), canMove: above && hasPermission(perms, "MOVE_MEMBERS") };
+  };
   const members = Object.values(membersById);
   const typingNames = channelId
     ? Object.keys(state.typing[channelId] ?? {})
@@ -518,7 +593,18 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
             activeChannelId={channel.id}
             unread={unreadChannels}
             mentions={channelMentions}
-            isOwner={guild.ownerId === me.id}
+            canManageChannels={hasPermission(guildPermissions, "MANAGE_CHANNELS")}
+            canInvite={hasPermission(guildPermissions, "CREATE_INVITE")}
+            canSpeak={hasPermission(voicePermissions, "SPEAK")}
+            canStream={hasPermission(voicePermissions, "STREAM")}
+            serverMuted={serverMuted}
+            canConnect={(id) => hasPermission(myChannelPermissions(state, id), "CONNECT")}
+            voiceModeration={voiceModeration}
+            onModerateVoice={(userId, action) => {
+              api.moderateVoice(guild.id, userId, action).catch((error: unknown) => {
+                setChatNotice(error instanceof ApiError ? error.message : "Não foi possível fazer isso na voz. Tente de novo.");
+              });
+            }}
             me={me}
             online={state.status === "ready"}
             statusText={statusText}
@@ -534,6 +620,7 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
             }}
             onInvite={() => setDialog("invite")}
             onOpenSettings={() => setSettingsOpen("account")}
+            onOpenGuildSettings={() => setGuildSettingsOpen(guild.id)}
             onJoinVoice={(id) => void joinVoice(id, guild.id)}
             onLeaveVoice={() => void leaveVoice()}
             onToggleMute={toggleMute}
@@ -559,7 +646,10 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
             bucket={bucket}
             historyError={historyError[channel.id] ?? null}
             me={me}
-            isOwner={guild.ownerId === me.id}
+            canSend={hasPermission(channelPermissions, "SEND_MESSAGES")}
+            canReact={hasPermission(channelPermissions, "ADD_REACTIONS")}
+            canManageMessages={hasPermission(channelPermissions, "MANAGE_MESSAGES")}
+            blockedReason={timeoutUntil ? `Você está de castigo ${untilText(timeoutUntil)}. Até lá, dá para ler, mas não escrever nem reagir.` : null}
             typingNames={typingNames}
             status={state.status}
             membersOpen={membersOpen}
@@ -602,7 +692,7 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
             }}
           />
           )}
-          {membersOpen && !stageOpen && <MemberList members={members} ownerId={guild.ownerId} />}
+          {membersOpen && !stageOpen && <MemberList members={members} ownerId={guild.ownerId} roles={guild.roles} />}
         </>
       ) : (
         <main className="chat chat--empty">
@@ -656,6 +746,18 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
         />
       )}
       {dialog === "invite" && guild && <InviteDialog api={api} guild={guild} onClose={closeDialog} />}
+      {guildSettingsOpen && state.guilds[guildSettingsOpen] && (
+        <GuildSettingsScreen
+          guild={state.guilds[guildSettingsOpen]!}
+          members={state.members[guildSettingsOpen] ?? {}}
+          channels={state.guilds[guildSettingsOpen]!.channelIds.map((id) => state.channels[id]).filter((c): c is Channel => c !== undefined)}
+          me={me}
+          permissions={myPermissions(state, guildSettingsOpen)}
+          api={api}
+          onLeaving={(id) => leavingRef.current.add(id)}
+          onClose={closeGuildSettings}
+        />
+      )}
       {settingsOpen && (
         <SettingsScreen
           initialSection={settingsOpen}

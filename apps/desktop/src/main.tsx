@@ -7,6 +7,7 @@ import "./app.css";
 import "./ui.css";
 import "./conversation.css";
 import "./settings.css";
+import "./guild-settings.css";
 import { App } from "./App";
 
 const root = document.getElementById("root");

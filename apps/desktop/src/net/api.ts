@@ -1,4 +1,4 @@
-import type { ApiErrorBody, AuthResponse, Channel, ChannelType, Guild, Id, Invite, Message, User, VoiceToken } from "@aurora/schema";
+import type { ApiErrorBody, AuditLogEntry, AuthResponse, Ban, Channel, ChannelType, Guild, Id, Invite, InviteDetails, Message, Overwrite, Role, User, VoiceToken } from "@aurora/schema";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -64,8 +64,8 @@ export class ApiClient {
   joinInvite(code: string) {
     return this.request<Guild>("POST", `/api/invites/${encodeURIComponent(code)}`);
   }
-  createChannel(guildId: Id, name: string, type: ChannelType = "text") {
-    return this.request<Channel>("POST", `/api/guilds/${guildId}/channels`, { name, type });
+  createChannel(guildId: Id, name: string, type: ChannelType = "text", isPrivate = false) {
+    return this.request<Channel>("POST", `/api/guilds/${guildId}/channels`, { name, type, ...(isPrivate ? { private: true } : {}) });
   }
   voiceToken(channelId: Id) {
     return this.request<VoiceToken>("POST", `/api/channels/${channelId}/voice`);
@@ -95,6 +95,73 @@ export class ApiClient {
   }
   updateProfile(displayName: string) {
     return this.request<User>("PATCH", "/api/users/@me", { displayName });
+  }
+  /* ---------- configurações do servidor (o servidor confere permissão e hierarquia) ---------- */
+  updateGuild(guildId: Id, name: string) {
+    return this.request<{ id: Id; name: string }>("PATCH", `/api/guilds/${guildId}`, { name });
+  }
+  deleteGuild(guildId: Id) {
+    return this.request<void>("DELETE", `/api/guilds/${guildId}`);
+  }
+  leaveGuild(guildId: Id) {
+    return this.request<void>("DELETE", `/api/guilds/${guildId}/members/@me`);
+  }
+  createRole(guildId: Id, fields: Partial<Pick<Role, "name" | "color" | "permissions" | "hoist">> = {}) {
+    return this.request<Role>("POST", `/api/guilds/${guildId}/roles`, fields);
+  }
+  updateRole(guildId: Id, roleId: Id, fields: Partial<Pick<Role, "name" | "color" | "permissions" | "hoist">>) {
+    return this.request<Role>("PATCH", `/api/guilds/${guildId}/roles/${roleId}`, fields);
+  }
+  moveRole(guildId: Id, roleId: Id, direction: "up" | "down") {
+    return this.request<Role[]>("POST", `/api/guilds/${guildId}/roles/${roleId}/move`, { direction });
+  }
+  deleteRole(guildId: Id, roleId: Id) {
+    return this.request<void>("DELETE", `/api/guilds/${guildId}/roles/${roleId}`);
+  }
+  setMemberRole(guildId: Id, userId: Id, roleId: Id, add: boolean) {
+    return this.request<{ roles: Id[] }>(add ? "PUT" : "DELETE", `/api/guilds/${guildId}/members/${userId}/roles/${roleId}`);
+  }
+  kickMember(guildId: Id, userId: Id) {
+    return this.request<void>("DELETE", `/api/guilds/${guildId}/members/${userId}`);
+  }
+  banMember(guildId: Id, userId: Id, reason?: string) {
+    return this.request<void>("PUT", `/api/guilds/${guildId}/bans/${userId}`, reason ? { reason } : {});
+  }
+  listBans(guildId: Id) {
+    return this.request<Ban[]>("GET", `/api/guilds/${guildId}/bans`);
+  }
+  unbanMember(guildId: Id, userId: Id) {
+    return this.request<void>("DELETE", `/api/guilds/${guildId}/bans/${userId}`);
+  }
+  listInvites(guildId: Id) {
+    return this.request<InviteDetails[]>("GET", `/api/guilds/${guildId}/invites`);
+  }
+  deleteInvite(code: string) {
+    return this.request<void>("DELETE", `/api/invites/${encodeURIComponent(code)}`);
+  }
+  updateChannel(channelId: Id, name: string) {
+    return this.request<Channel>("PATCH", `/api/channels/${channelId}`, { name });
+  }
+  deleteChannel(channelId: Id) {
+    return this.request<void>("DELETE", `/api/channels/${channelId}`);
+  }
+  /** Permissões do canal para um cargo ou pessoa (`allow` e `deny` zerados = volta a seguir o servidor). */
+  setOverwrite(channelId: Id, overwrite: Overwrite) {
+    return this.request<Channel>("PUT", `/api/channels/${channelId}/overwrites/${overwrite.targetType}/${overwrite.targetId}`, { allow: overwrite.allow, deny: overwrite.deny });
+  }
+  deleteOverwrite(channelId: Id, targetType: Overwrite["targetType"], targetId: Id) {
+    return this.request<Channel>("DELETE", `/api/channels/${channelId}/overwrites/${targetType}/${targetId}`);
+  }
+  /** Castigo por `minutes` (ou `null` para tirar). */
+  timeoutMember(guildId: Id, userId: Id, minutes: number | null) {
+    return this.request<{ timeoutUntil: number | null }>("PUT", `/api/guilds/${guildId}/members/${userId}/timeout`, { minutes });
+  }
+  /** Silenciar (`muted`), mover (`channelId`) ou desconectar (`channelId: null`) alguém na voz. */
+  moderateVoice(guildId: Id, userId: Id, action: { muted?: boolean; channelId?: Id | null }) {
+    return this.request<void>("PATCH", `/api/guilds/${guildId}/members/${userId}/voice`, action);
+  }
+  auditLog(guildId: Id, before?: Id) {
+    return this.request<AuditLogEntry[]>("GET", `/api/guilds/${guildId}/audit-log${before ? `?before=${before}` : ""}`);
   }
   /** Troca a senha; as sessões dos outros aparelhos são encerradas (esta continua). */
   changePassword(currentPassword: string, newPassword: string) {

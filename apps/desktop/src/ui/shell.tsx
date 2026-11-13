@@ -1,10 +1,13 @@
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import {
+  ArrowRightLeft,
   Compass,
   Crown,
+  Ellipsis,
   Hash,
   HeadphoneOff,
   Headphones,
+  Lock,
   Mic,
   MicOff,
   PhoneOff,
@@ -12,12 +15,14 @@ import {
   ScreenShare,
   ScreenShareOff,
   Settings,
+  Settings2,
   UserPlus,
   Volume2,
 } from "lucide-react";
-import type { Channel, ChannelType, Id, Member, User, VoiceState } from "@aurora/schema";
+import { isPrivateChannel, type Channel, type ChannelType, type Id, type Member, type Role, type User, type VoiceState } from "@aurora/schema";
 import type { GuildEntry } from "../state/chat-store";
 import { avatarIndex, initials } from "../messages";
+import { memberColor, memberGroups } from "../roles";
 
 export const ICON = { size: 20, strokeWidth: 1.75, "aria-hidden": true } as const;
 export const ICON_SM = { size: 16, strokeWidth: 1.75, "aria-hidden": true } as const;
@@ -114,7 +119,19 @@ interface SidebarProps {
   unread: ReadonlySet<Id>;
   /** Menções não lidas por canal. */
   mentions: Readonly<Record<Id, number>>;
-  isOwner: boolean;
+  /** Permissões neste servidor (o servidor confere de novo). */
+  canManageChannels: boolean;
+  canInvite: boolean;
+  /** Na sala em que estou: falar e transmitir. */
+  canSpeak: boolean;
+  canStream: boolean;
+  /** Um moderador me silenciou (o microfone fica bloqueado até tirarem). */
+  serverMuted: boolean;
+  /** Posso entrar nesta sala de voz? */
+  canConnect: (channelId: Id) => boolean;
+  /** O que posso fazer com quem está na voz (silenciar; mover e desconectar). */
+  voiceModeration: (userId: Id, channelId: Id) => { canMute: boolean; canMove: boolean };
+  onModerateVoice: (userId: Id, action: { muted?: boolean; channelId?: Id | null }) => void;
   me: User;
   online: boolean;
   statusText: string;
@@ -127,6 +144,7 @@ interface SidebarProps {
   onCreateChannel: (type: ChannelType) => void;
   onInvite: () => void;
   onOpenSettings: () => void;
+  onOpenGuildSettings: () => void;
   onJoinVoice: (channelId: Id) => void;
   onLeaveVoice: () => void;
   onToggleMute: () => void;
@@ -142,7 +160,7 @@ interface SidebarProps {
 }
 
 export function Sidebar(props: SidebarProps) {
-  const { guild, textChannels, voiceChannels, activeChannelId, unread, mentions, isOwner, onSelectChannel } = props;
+  const { guild, textChannels, voiceChannels, activeChannelId, unread, mentions, canManageChannels, onSelectChannel } = props;
   const participantsOf = (channelId: Id) => Object.values(props.voiceStates).filter((v) => v.channelId === channelId);
 
   return (
@@ -151,12 +169,17 @@ export function Sidebar(props: SidebarProps) {
         <h1 className="sidebar__title" title={guild.name}>
           {guild.name}
         </h1>
-        <button type="button" className="icon-button" aria-label="Convidar pessoas" title="Convidar pessoas" onClick={props.onInvite}>
-          <UserPlus {...ICON} />
+        {props.canInvite && (
+          <button type="button" className="icon-button" aria-label="Convidar pessoas" title="Convidar pessoas" onClick={props.onInvite}>
+            <UserPlus {...ICON} />
+          </button>
+        )}
+        <button type="button" className="icon-button" aria-label="Configurações do servidor" title="Configurações do servidor" onClick={props.onOpenGuildSettings}>
+          <Settings2 {...ICON} />
         </button>
       </header>
       <nav className="sidebar__nav" aria-label="Canais">
-        <CategoryHeader label="Canais de texto" canCreate={isOwner} onCreate={() => props.onCreateChannel("text")} createLabel="Criar canal de texto" />
+        <CategoryHeader label="Canais de texto" canCreate={canManageChannels} onCreate={() => props.onCreateChannel("text")} createLabel="Criar canal de texto" />
         <ul className="channel-list">
           {textChannels.map((channel) => {
             const selected = channel.id === activeChannelId;
@@ -175,6 +198,7 @@ export function Sidebar(props: SidebarProps) {
                 >
                   <Hash {...ICON} />
                   <span className="channel__name">{channel.name}</span>
+                  {isPrivateChannel(guild.id, channel.overwrites) && <PrivateMark />}
                   {mentionCount > 0 ? (
                     <span className="badge badge--mention" aria-hidden="true">
                       {badgeCount(mentionCount)}
@@ -188,23 +212,28 @@ export function Sidebar(props: SidebarProps) {
           })}
         </ul>
 
-        {(voiceChannels.length > 0 || isOwner) && (
-          <CategoryHeader label="Canais de voz" canCreate={isOwner} onCreate={() => props.onCreateChannel("voice")} createLabel="Criar canal de voz" />
+        {(voiceChannels.length > 0 || canManageChannels) && (
+          <CategoryHeader label="Canais de voz" canCreate={canManageChannels} onCreate={() => props.onCreateChannel("voice")} createLabel="Criar canal de voz" />
         )}
         <ul className="channel-list">
           {voiceChannels.map((channel) => {
             const participants = participantsOf(channel.id);
             const joined = props.myVoice?.channelId === channel.id;
+            const allowed = joined || props.canConnect(channel.id);
+            const action = joined ? ", você está aqui" : allowed ? ", entrar" : ", você não tem permissão para entrar";
             return (
               <li key={channel.id}>
                 <button
                   type="button"
-                  className={joined ? "channel channel--voice-active" : "channel"}
-                  aria-label={`${channel.name}, canal de voz${participants.length ? `, ${participants.length} na sala` : ""}${joined ? ", você está aqui" : ", entrar"}`}
-                  onClick={() => !joined && props.onJoinVoice(channel.id)}
+                  className={joined ? "channel channel--voice-active" : allowed ? "channel" : "channel channel--locked"}
+                  aria-label={`${channel.name}, canal de voz${participants.length ? `, ${participants.length} na sala` : ""}${action}`}
+                  aria-disabled={allowed ? undefined : true}
+                  title={allowed ? undefined : "Você não tem permissão para entrar nesta sala"}
+                  onClick={() => !joined && allowed && props.onJoinVoice(channel.id)}
                 >
                   <Volume2 {...ICON} />
                   <span className="channel__name">{channel.name}</span>
+                  {isPrivateChannel(guild.id, channel.overwrites) && <PrivateMark />}
                 </button>
                 {participants.length > 0 && (
                   <ul className="voice-users" aria-label={`Na sala ${channel.name}`}>
@@ -212,6 +241,7 @@ export function Sidebar(props: SidebarProps) {
                       const user = props.membersById[state.userId]?.user;
                       if (!user) return null;
                       const speaking = joined && props.speaking.has(state.userId) && !state.muted;
+                      const moderation = state.userId === props.me.id ? null : props.voiceModeration(state.userId, channel.id);
                       return (
                         <li key={state.userId} className="voice-user">
                           <Avatar user={user} size="sm" speaking={speaking} />
@@ -227,7 +257,12 @@ export function Sidebar(props: SidebarProps) {
                                 AO VIVO
                               </span>
                             ))}
-                          {state.deafened ? (
+                          {state.serverMuted ? (
+                            <span className="voice-user__flag voice-user__flag--server" title="Silenciado por um moderador">
+                              <MicOff {...ICON_SM} />
+                              <span className="sr-only">(silenciado por um moderador)</span>
+                            </span>
+                          ) : state.deafened ? (
                             <span className="voice-user__flag" title="Ensurdecido">
                               <HeadphoneOff {...ICON_SM} />
                               <span className="sr-only">(ensurdecido)</span>
@@ -238,6 +273,16 @@ export function Sidebar(props: SidebarProps) {
                               <span className="sr-only">(microfone desligado)</span>
                             </span>
                           ) : null}
+                          {moderation && (moderation.canMute || moderation.canMove) && (
+                            <VoiceUserMenu
+                              name={user.displayName}
+                              serverMuted={Boolean(state.serverMuted)}
+                              canMute={moderation.canMute}
+                              canMove={moderation.canMove}
+                              destinations={voiceChannels.filter((c) => c.id !== channel.id && props.canConnect(c.id))}
+                              onAction={(action) => props.onModerateVoice(state.userId, action)}
+                            />
+                          )}
                         </li>
                       );
                     })}
@@ -251,6 +296,125 @@ export function Sidebar(props: SidebarProps) {
       <VoicePanel {...props} />
       <UserPanel {...props} />
     </aside>
+  );
+}
+
+function PrivateMark() {
+  return (
+    <span className="channel__private" title="Canal privado">
+      <Lock {...ICON_SM} />
+      <span className="sr-only">(privado)</span>
+    </span>
+  );
+}
+
+/** Menu de moderação de quem está na voz: silenciar para todos, mover para outra sala, desconectar. */
+function VoiceUserMenu({
+  name,
+  serverMuted,
+  canMute,
+  canMove,
+  destinations,
+  onAction,
+}: {
+  name: string;
+  serverMuted: boolean;
+  canMute: boolean;
+  canMove: boolean;
+  destinations: Channel[];
+  onAction: (action: { muted?: boolean; channelId?: Id | null }) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const items = () => [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [])];
+
+  useEffect(() => {
+    if (!open) return;
+    items()[0]?.focus();
+    const onPointer = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointer);
+    return () => document.removeEventListener("pointerdown", onPointer);
+  }, [open]);
+
+  const close = () => {
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+  const choose = (action: { muted?: boolean; channelId?: Id | null }) => {
+    close();
+    onAction(action);
+  };
+  const onKeyDown = (event: ReactKeyboardEvent) => {
+    const list = items();
+    const index = list.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      list[(index + step + list.length) % list.length]?.focus();
+    } else if (event.key === "Tab") {
+      setOpen(false);
+    }
+  };
+
+  return (
+    <div className="voice-user__actions" ref={rootRef}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="icon-button icon-button--small voice-user__more"
+        aria-label={`Moderar ${name} na voz`}
+        title={`Moderar ${name}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <Ellipsis {...ICON_SM} />
+      </button>
+      {open && (
+        <div className="voice-menu" role="menu" aria-label={`Moderar ${name}`} ref={menuRef} onKeyDown={onKeyDown}>
+          {canMute && (
+            <button type="button" role="menuitem" className="voice-menu__item" onClick={() => choose({ muted: !serverMuted })}>
+              {serverMuted ? <Mic {...ICON_SM} /> : <MicOff {...ICON_SM} />}
+              {serverMuted ? "Tirar o silêncio" : "Silenciar para todos"}
+            </button>
+          )}
+          {canMove && destinations.length > 0 && (
+            <>
+              <span className="voice-menu__label" aria-hidden="true">
+                Mover para
+              </span>
+              {destinations.map((destination) => (
+                <button
+                  key={destination.id}
+                  type="button"
+                  role="menuitem"
+                  className="voice-menu__item"
+                  aria-label={`Mover para ${destination.name}`}
+                  onClick={() => choose({ channelId: destination.id })}
+                >
+                  <ArrowRightLeft {...ICON_SM} />
+                  {destination.name}
+                </button>
+              ))}
+            </>
+          )}
+          {canMove && (
+            <button type="button" role="menuitem" className="voice-menu__item voice-menu__item--danger" onClick={() => choose({ channelId: null })}>
+              <PhoneOff {...ICON_SM} />
+              Desconectar da voz
+            </button>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -286,6 +450,9 @@ function VoicePanel({
   onToggleScreenShare,
   onToggleStage,
   shareNotice,
+  canSpeak,
+  canStream,
+  serverMuted,
 }: SidebarProps) {
   if (voiceError) {
     return (
@@ -314,8 +481,17 @@ function VoicePanel({
           type="button"
           className="icon-button icon-button--alert"
           aria-pressed={myVoice.muted}
-          aria-label={myVoice.muted ? "Ligar microfone" : "Desligar microfone"}
-          title={myVoice.muted ? "Ligar microfone" : "Desligar microfone"}
+          aria-label={
+            serverMuted
+              ? "Microfone bloqueado: um moderador silenciou você"
+              : !canSpeak
+                ? "Microfone bloqueado: você não tem permissão para falar aqui"
+                : myVoice.muted
+                  ? "Ligar microfone"
+                  : "Desligar microfone"
+          }
+          title={serverMuted ? "Um moderador silenciou você nesta voz" : !canSpeak ? "Você não tem permissão para falar nesta sala" : myVoice.muted ? "Ligar microfone" : "Desligar microfone"}
+          disabled={!canSpeak || serverMuted}
           onClick={onToggleMute}
         >
           {myVoice.muted ? <MicOff {...ICON} /> : <Mic {...ICON} />}
@@ -334,10 +510,10 @@ function VoicePanel({
           type="button"
           className="icon-button icon-button--live"
           aria-pressed={myVoice.streaming}
-          aria-label={myVoice.streaming ? "Parar de compartilhar a tela" : "Compartilhar tela"}
-          title={myVoice.streaming ? "Parar de compartilhar a tela" : "Compartilhar tela"}
+          aria-label={myVoice.streaming ? "Parar de compartilhar a tela" : canStream ? "Compartilhar tela" : "Compartilhar tela: você não tem permissão para transmitir aqui"}
+          title={myVoice.streaming ? "Parar de compartilhar a tela" : canStream ? "Compartilhar tela" : "Você não tem permissão para transmitir nesta sala"}
           onClick={onToggleScreenShare}
-          disabled={myVoice.status !== "connected" && !myVoice.streaming}
+          disabled={(myVoice.status !== "connected" || !canStream) && !myVoice.streaming}
         >
           {myVoice.streaming ? <ScreenShareOff {...ICON} /> : <ScreenShare {...ICON} />}
         </button>
@@ -381,26 +557,26 @@ function UserPanel({ me, online, statusText, onOpenSettings }: SidebarProps) {
 
 /* ---------------- membros ---------------- */
 
-export function MemberList({ members, ownerId }: { members: Member[]; ownerId: Id }) {
-  const byName = (a: Member, b: Member) => a.user.displayName.localeCompare(b.user.displayName, "pt-BR");
-  const groups = [
-    { label: "Online", items: members.filter((m) => m.online).sort(byName) },
-    { label: "Offline", items: members.filter((m) => !m.online).sort(byName) },
-  ].filter((group) => group.items.length > 0);
+/** Membros agrupados pelos cargos "mostrar separado"; a cor do cargo vai num ponto ao lado do nome (guia §6.5). */
+export function MemberList({ members, ownerId, roles }: { members: Member[]; ownerId: Id; roles: readonly Role[] }) {
+  const groups = memberGroups(members, roles);
 
   return (
     <aside className="members" aria-label="Membros">
       {groups.map((group) => (
-        <section key={group.label}>
+        <section key={group.key}>
           <h3 className="members__role">
-            {group.label} — {group.items.length}
+            {group.label} — {group.members.length}
           </h3>
           <ul>
-            {group.items.map((member) => (
+            {group.members.map((member) => {
+              const color = memberColor(roles, member);
+              return (
               <li key={member.user.id} className={member.online ? "member" : "member member--offline"}>
                 <Avatar user={member.user} online={member.online} />
                 <div className="member__text">
                   <span className="member__name">
+                    {color !== null && <span className="role-dot" data-color={color} aria-hidden="true" />}
                     {member.user.displayName}
                     {member.user.id === ownerId && (
                       <span className="member__owner" title="Dono do servidor">
@@ -412,7 +588,8 @@ export function MemberList({ members, ownerId }: { members: Member[]; ownerId: I
                   <span className="member__activity">@{member.user.username}</span>
                 </div>
               </li>
-            ))}
+              );
+            })}
           </ul>
         </section>
       ))}

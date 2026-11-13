@@ -20,7 +20,13 @@ interface ChatPaneProps {
   bucket: ChannelMessages | undefined;
   historyError: string | null;
   me: User;
-  isOwner: boolean;
+  /** Permissões neste servidor (o servidor confere de novo; aqui só escondem o que não pode). */
+  canSend: boolean;
+  canReact: boolean;
+  /** Apagar mensagens de outras pessoas. */
+  canManageMessages: boolean;
+  /** Por que não dá para escrever (ex.: castigo); sem isto, o aviso padrão de falta de permissão. */
+  blockedReason?: string | null;
   typingNames: string[];
   status: ConnectionStatus;
   membersOpen: boolean;
@@ -48,7 +54,9 @@ interface ChatPaneProps {
 /** O que as mensagens precisam saber sobre pessoas e ações (evita repassar 10 props). */
 interface MessageContext {
   me: User;
-  isOwner: boolean;
+  canSend: boolean;
+  canReact: boolean;
+  canManageMessages: boolean;
   users: User[];
   usersById: Readonly<Record<Id, User>>;
   nameOf: (userId: Id) => string | null;
@@ -137,7 +145,9 @@ export function ChatPane(props: ChatPaneProps) {
 
   const context: MessageContext = {
     me,
-    isOwner: props.isOwner,
+    canSend: props.canSend,
+    canReact: props.canReact,
+    canManageMessages: props.canManageMessages,
     users,
     usersById,
     nameOf,
@@ -256,16 +266,22 @@ export function ChatPane(props: ChatPaneProps) {
         </button>
       )}
 
-      <Composer
-        inputRef={composerRef}
-        channelName={channel.name}
-        members={members}
-        users={users}
-        replyingTo={replyingTo}
-        onCancelReply={() => setReplyingTo(null)}
-        onSend={props.onSend}
-        onTyping={props.onTyping}
-      />
+      {props.canSend ? (
+        <Composer
+          inputRef={composerRef}
+          channelName={channel.name}
+          members={members}
+          users={users}
+          replyingTo={replyingTo}
+          onCancelReply={() => setReplyingTo(null)}
+          onSend={props.onSend}
+          onTyping={props.onTyping}
+        />
+      ) : (
+        <p className="composer-blocked" role="note">
+          {props.blockedReason ?? "Você não tem permissão para enviar mensagens neste canal. Peça a quem administra."}
+        </p>
+      )}
       <div className="typing" aria-live="polite">
         {typingText(props.typingNames)}
       </div>
@@ -277,7 +293,7 @@ export function ChatPane(props: ChatPaneProps) {
 
 function MessageItem({ message, startsGroup, flash, ctx }: { message: Message; startsGroup: boolean; flash: boolean; ctx: MessageContext }) {
   const mine = message.author.id === ctx.me.id;
-  const canDelete = mine || ctx.isOwner;
+  const canDelete = mine || ctx.canManageMessages;
   const mentionsMe = !mine && message.mentions.includes(ctx.me.id);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -415,7 +431,8 @@ function MessageItem({ message, startsGroup, flash, ctx }: { message: Message; s
                   className="reaction"
                   aria-pressed={reacted}
                   title={`${names} reagiu com ${reaction.emoji}`}
-                  aria-label={`${reaction.emoji}: ${count} ${count === 1 ? "reação" : "reações"} (${names})${reacted ? ". Clique para tirar a sua" : ". Clique para reagir também"}`}
+                  aria-label={`${reaction.emoji}: ${count} ${count === 1 ? "reação" : "reações"} (${names})${reacted ? ". Clique para tirar a sua" : ctx.canReact ? ". Clique para reagir também" : ""}`}
+                  disabled={!reacted && !ctx.canReact}
                   onClick={() => ctx.onReact(message, reaction.emoji)}
                 >
                   <span className="reaction__emoji" aria-hidden="true">
@@ -448,20 +465,24 @@ function MessageItem({ message, startsGroup, flash, ctx }: { message: Message; s
       </div>
       {!editing && !confirming && (
         <div className={picking ? "message__actions message__actions--open" : "message__actions"}>
-          <button
-            ref={reactButtonRef}
-            type="button"
-            className="icon-button icon-button--small"
-            aria-label="Adicionar reação"
-            aria-expanded={picking}
-            title="Reagir"
-            onClick={() => setPicking((open) => !open)}
-          >
-            <FaceSlightlySmilingPlus {...ICON_SM} />
-          </button>
-          <button type="button" className="icon-button icon-button--small" aria-label="Responder" title="Responder" onClick={() => ctx.onReply(message)}>
-            <Reply {...ICON_SM} />
-          </button>
+          {ctx.canReact && (
+            <button
+              ref={reactButtonRef}
+              type="button"
+              className="icon-button icon-button--small"
+              aria-label="Adicionar reação"
+              aria-expanded={picking}
+              title="Reagir"
+              onClick={() => setPicking((open) => !open)}
+            >
+              <FaceSlightlySmilingPlus {...ICON_SM} />
+            </button>
+          )}
+          {ctx.canSend && (
+            <button type="button" className="icon-button icon-button--small" aria-label="Responder" title="Responder" onClick={() => ctx.onReply(message)}>
+              <Reply {...ICON_SM} />
+            </button>
+          )}
           {mine && (
             <button type="button" className="icon-button icon-button--small" aria-label="Editar mensagem" title="Editar" onClick={startEdit}>
               <Pencil {...ICON_SM} />

@@ -4,6 +4,9 @@
  */
 export type Id = string;
 
+export * from "./permissions.ts";
+import type { Overwrite, Role } from "./permissions.ts";
+
 export interface User {
   id: Id;
   username: string;
@@ -18,6 +21,8 @@ export interface Channel {
   type: ChannelType;
   name: string;
   position: number;
+  /** Permissões deste canal para cargos/pessoas (vazio = vale o do servidor). */
+  overwrites: Overwrite[];
 }
 
 /** Quem está em qual canal de voz (some quando a pessoa sai ou a conexão cai). */
@@ -28,6 +33,8 @@ export interface VoiceState {
   deafened: boolean;
   /** Compartilhando a tela ("AO VIVO"). */
   streaming: boolean;
+  /** Silenciado por um moderador (não liga o microfone até tirarem). */
+  serverMuted?: boolean;
 }
 
 /** Servidor STUN/TURN no formato do `RTCIceServer` do WebRTC. */
@@ -53,6 +60,10 @@ export interface Member {
   user: User;
   joinedAt: number;
   online: boolean;
+  /** Cargos do membro, sem o @todos (que todo mundo tem). */
+  roles: Id[];
+  /** De castigo até este instante (ms); `null` = livre. */
+  timeoutUntil?: number | null;
 }
 
 export interface Guild {
@@ -62,6 +73,8 @@ export interface Guild {
   channels: Channel[];
   members: Member[];
   voiceStates: VoiceState[];
+  /** Inclui o @todos (id = id do servidor, posição 0). */
+  roles: Role[];
 }
 
 /** Trecho da mensagem respondida (resolvido pelo servidor). `author`/`content` nulos = a original foi apagada. */
@@ -113,6 +126,55 @@ export interface Invite {
   guildId: Id;
 }
 
+/** Convite na tela de configurações do servidor. */
+export interface InviteDetails extends Invite {
+  createdBy: User | null;
+  createdAt: number;
+  uses: number;
+}
+
+export interface Ban {
+  user: User;
+  reason: string | null;
+  bannedBy: User | null;
+  createdAt: number;
+}
+
+export type AuditAction =
+  | "guild_update"
+  | "channel_create"
+  | "channel_update"
+  | "channel_delete"
+  | "role_create"
+  | "role_update"
+  | "role_delete"
+  | "member_role_add"
+  | "member_role_remove"
+  | "member_kick"
+  | "member_ban"
+  | "member_unban"
+  | "invite_delete"
+  | "channel_permissions"
+  | "member_timeout"
+  | "member_timeout_remove"
+  | "voice_mute"
+  | "voice_unmute"
+  | "voice_move"
+  | "voice_disconnect";
+
+/** Uma linha do registro de auditoria: quem fez, o quê, em quem/onde e quando. */
+export interface AuditLogEntry {
+  id: Id;
+  guildId: Id;
+  actor: User | null;
+  action: AuditAction;
+  /** Nome do alvo no momento da ação (o alvo pode ter sido apagado depois). */
+  targetName: string;
+  /** Detalhe curto (ex.: nome antigo → novo, motivo do banimento, cargo dado). */
+  detail: string | null;
+  createdAt: number;
+}
+
 export interface ApiErrorBody {
   error: { code: string; message: string };
 }
@@ -134,6 +196,8 @@ export const LIMITS = {
   /** Emojis diferentes por mensagem. */
   reactionsPerMessage: 20,
   mentionsPerMessage: 20,
+  banReasonMax: 200,
+  auditPageSize: 50,
 } as const;
 
 /** `<@id>`: como uma menção fica guardada no texto da mensagem. */
@@ -207,13 +271,27 @@ export type DispatchEvent =
   | { t: "PRESENCE_UPDATE"; d: { userId: Id; online: boolean } }
   | { t: "TYPING_START"; d: { channelId: Id; userId: Id } }
   /** `channelId: null` = saiu da voz. */
-  | { t: "VOICE_STATE_UPDATE"; d: { guildId: Id; userId: Id; channelId: Id | null; muted: boolean; deafened: boolean; streaming: boolean } }
+  | { t: "VOICE_STATE_UPDATE"; d: { guildId: Id; userId: Id; channelId: Id | null; muted: boolean; deafened: boolean; streaming: boolean; serverMuted?: boolean } }
   | { t: "MESSAGE_REACTION_ADD"; d: ReactionEvent }
   | { t: "MESSAGE_REACTION_REMOVE"; d: ReactionEvent }
   /** Só para o próprio usuário: leu um canal em outro aparelho/aba. */
   | { t: "READ_STATE_UPDATE"; d: { channelId: Id; lastReadId: Id } }
   /** Alguém (inclusive eu, em outro aparelho) mudou o nome de exibição. */
-  | { t: "USER_UPDATE"; d: User };
+  | { t: "USER_UPDATE"; d: User }
+  | { t: "GUILD_UPDATE"; d: { id: Id; name: string } }
+  /** O servidor foi excluído, ou eu saí, fui expulso ou banido: some da minha lista. */
+  | { t: "GUILD_DELETE"; d: { id: Id } }
+  /** Lista completa de cargos depois de criar, editar, ordenar ou excluir. */
+  | { t: "GUILD_ROLES_UPDATE"; d: { guildId: Id; roles: Role[] } }
+  | { t: "MEMBER_UPDATE"; d: { guildId: Id; userId: Id; roles: Id[]; timeoutUntil?: number | null } }
+  | { t: "MEMBER_REMOVE"; d: { guildId: Id; userId: Id } }
+  | { t: "CHANNEL_UPDATE"; d: Channel }
+  | { t: "CHANNEL_DELETE"; d: { id: Id; guildId: Id } }
+  /**
+   * Só para quem foi movido: um moderador levou você para outra sala (`channelId`) ou tirou você da
+   * voz (`null`). O estado de voz no servidor já mudou; o app troca de sala sem avisar "saí".
+   */
+  | { t: "VOICE_MOVE"; d: { guildId: Id; channelId: Id | null } };
 
 export interface ReactionEvent {
   channelId: Id;
@@ -223,7 +301,20 @@ export interface ReactionEvent {
 }
 
 /** Eventos que só vão para clientes com `identify.v >= 2`. */
-export const V2_EVENTS: ReadonlySet<DispatchEvent["t"]> = new Set(["MESSAGE_REACTION_ADD", "MESSAGE_REACTION_REMOVE", "READ_STATE_UPDATE", "USER_UPDATE"]);
+export const V2_EVENTS: ReadonlySet<DispatchEvent["t"]> = new Set([
+  "MESSAGE_REACTION_ADD",
+  "MESSAGE_REACTION_REMOVE",
+  "READ_STATE_UPDATE",
+  "USER_UPDATE",
+  "GUILD_UPDATE",
+  "GUILD_DELETE",
+  "GUILD_ROLES_UPDATE",
+  "MEMBER_UPDATE",
+  "MEMBER_REMOVE",
+  "CHANNEL_UPDATE",
+  "CHANNEL_DELETE",
+  "VOICE_MOVE",
+]);
 
 export type ServerFrame =
   | { op: "hello"; heartbeatIntervalMs: number }

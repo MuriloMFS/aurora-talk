@@ -3,6 +3,7 @@ import { Check, Copy } from "lucide-react";
 import { LIMITS, normalizeChannelName, normalizeVoiceChannelName, type Channel, type ChannelType, type Guild, type Id } from "@aurora/schema";
 import { ApiError, type ApiClient } from "../net/api";
 import { Modal } from "./Modal";
+import { SwitchRow } from "./settings/controls";
 
 const message = (error: unknown) => (error instanceof ApiError ? error.message : "Algo deu errado. Tente de novo.");
 
@@ -119,6 +120,7 @@ export function CreateChannelDialog({
   onClose: () => void;
 }) {
   const [type, setType] = useState<ChannelType>(initialType);
+  const [isPrivate, setPrivate] = useState(false);
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -132,7 +134,7 @@ export function CreateChannelDialog({
     setBusy(true);
     setError(null);
     try {
-      onCreated(await api.createChannel(guildId, name, type));
+      onCreated(await api.createChannel(guildId, name, type, isPrivate));
       onClose();
     } catch (caught) {
       setError(message(caught));
@@ -141,7 +143,11 @@ export function CreateChannelDialog({
   };
 
   return (
-    <Modal title="Criar canal" description="Todos os membros do servidor vão ver o novo canal." onClose={onClose}>
+    <Modal
+      title="Criar canal"
+      description={isPrivate ? "Só você vai ver o canal. Depois, em Configurações do servidor → Canais, libere quem mais pode ver." : "Todos os membros do servidor vão ver o novo canal."}
+      onClose={onClose}
+    >
       <form className="form" onSubmit={submit}>
         <fieldset className="choice-group">
           <legend className="field__label">Tipo de canal</legend>
@@ -175,6 +181,12 @@ export function CreateChannelDialog({
             </span>
           )}
         </div>
+        <SwitchRow
+          label="Canal privado"
+          hint="Só quem você liberar vê o canal (quem administra vê tudo)."
+          checked={isPrivate}
+          onChange={setPrivate}
+        />
         {error && (
           <p className="form-error" role="alert">
             {error}

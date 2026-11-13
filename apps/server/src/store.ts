@@ -1,7 +1,35 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { LIMITS, type Channel, type ChannelType, type Guild, type Id, type Invite, type Member, type Message, type MessageReference, type Reaction, type ReadState, type User, type VoiceState } from "@aurora/schema";
+import {
+  DEFAULT_EVERYONE_PERMISSIONS,
+  EVERYONE_ROLE_NAME,
+  LIMITS,
+  PERMISSIONS,
+  applyTimeout,
+  byPositionDesc,
+  computeChannelPermissions,
+  computePermissions,
+  type AuditAction,
+  type AuditLogEntry,
+  type Ban,
+  type Channel,
+  type ChannelType,
+  type Guild,
+  type Id,
+  type Invite,
+  type InviteDetails,
+  type Member,
+  type Message,
+  type MessageReference,
+  type Overwrite,
+  type PermissionContext,
+  type Reaction,
+  type ReadState,
+  type Role,
+  type User,
+  type VoiceState,
+} from "@aurora/schema";
 import { ID_EPOCH, ID_SEQUENCE_SIZE, nextId } from "./ids.ts";
 import { newInviteCode } from "./auth.ts";
 
@@ -47,26 +75,78 @@ CREATE TABLE IF NOT EXISTS read_states (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
   last_read_id INTEGER NOT NULL, PRIMARY KEY (user_id, channel_id));
+-- 1.5: cargos (o @todos tem id = id do servidor), banimentos e registro de auditoria
+CREATE TABLE IF NOT EXISTS roles (
+  id INTEGER PRIMARY KEY, guild_id INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, color INTEGER, position INTEGER NOT NULL, permissions INTEGER NOT NULL,
+  hoist INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS roles_by_guild ON roles(guild_id, position);
+CREATE TABLE IF NOT EXISTS member_roles (
+  guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+  role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+  PRIMARY KEY (guild_id, user_id, role_id),
+  FOREIGN KEY (guild_id, user_id) REFERENCES members(guild_id, user_id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS bans (
+  guild_id INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  reason TEXT, banned_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at INTEGER NOT NULL, PRIMARY KEY (guild_id, user_id));
+CREATE TABLE IF NOT EXISTS audit_log (
+  id INTEGER PRIMARY KEY, guild_id INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+  actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL, action TEXT NOT NULL,
+  target_name TEXT NOT NULL, detail TEXT, created_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS audit_by_guild ON audit_log(guild_id, id);
+-- 1.6: permissões por canal e moderação (castigo e silêncio na voz ficam mesmo se a pessoa sair e voltar)
+CREATE TABLE IF NOT EXISTS channel_overwrites (
+  channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  target_type TEXT NOT NULL, target_id INTEGER NOT NULL, allow INTEGER NOT NULL, deny INTEGER NOT NULL,
+  PRIMARY KEY (channel_id, target_type, target_id));
+CREATE TABLE IF NOT EXISTS moderation (
+  guild_id INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  timeout_until INTEGER, server_muted INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (guild_id, user_id));
 `;
 
 interface UserRow { id: number; username: string; display_name: string }
 interface ChannelRow { id: number; guild_id: number; name: string; position: number; type: ChannelType }
 interface GuildRow { id: number; name: string; owner_id: number }
 interface MemberRow extends UserRow { joined_at: number }
+interface RoleRow { id: number; guild_id: number; name: string; color: number | null; position: number; permissions: number; hoist: number }
+interface OverwriteRow { channel_id: number; target_type: string; target_id: number; allow: number; deny: number }
 interface MessageRow {
   id: number; channel_id: number; author_id: number; content: string; created_at: number; edited_at: number | null; username: string; display_name: string;
   reply_to_id: number | null; reply_author_id: number | null; reply_username: string | null; reply_display_name: string | null; reply_content: string | null;
 }
 
 const toUser = (r: UserRow): User => ({ id: String(r.id), username: r.username, displayName: r.display_name });
-const toChannel = (r: ChannelRow): Channel => ({
+const toChannel = (r: ChannelRow, overwrites: Overwrite[] = []): Channel => ({
   id: String(r.id),
   guildId: String(r.guild_id),
   type: r.type === "voice" ? "voice" : "text",
   name: r.name,
   position: r.position,
+  overwrites,
+});
+const toOverwrite = (r: OverwriteRow): Overwrite => ({
+  targetType: r.target_type === "member" ? "member" : "role",
+  targetId: String(r.target_id),
+  allow: r.allow,
+  deny: r.deny,
 });
 const CHANNEL_COLUMNS = "id, guild_id, name, position, type";
+const toRole = (r: RoleRow): Role => ({
+  id: String(r.id),
+  guildId: String(r.guild_id),
+  name: r.name,
+  color: r.color,
+  position: r.position,
+  permissions: r.permissions,
+  hoist: r.hoist === 1,
+});
+const ROLE_COLUMNS = "id, guild_id, name, color, position, permissions, hoist";
+const userOrNull = (id: number | null, username: string | null, displayName: string | null): User | null =>
+  id === null || username === null ? null : { id: String(id), username, displayName: displayName ?? username };
 
 const excerpt = (content: string) => (content.length > LIMITS.replyExcerptMax ? `${content.slice(0, LIMITS.replyExcerptMax - 1)}…` : content);
 
@@ -111,6 +191,19 @@ export class Store {
     // 1.3: respostas. Sem chave estrangeira de propósito: apagar a original não apaga as respostas.
     const messageColumns = this.all<{ name: string }>("PRAGMA table_info(messages)").map((c) => c.name);
     if (!messageColumns.includes("reply_to_id")) this.db.exec("ALTER TABLE messages ADD COLUMN reply_to_id INTEGER");
+    // 1.5: todo servidor ganha o cargo @todos com as permissões padrão
+    this.run(
+      `INSERT INTO roles (id, guild_id, name, color, position, permissions, hoist)
+       SELECT g.id, g.id, ?, NULL, 0, ?, 0 FROM guilds g WHERE NOT EXISTS (SELECT 1 FROM roles r WHERE r.id = g.id)`,
+      EVERYONE_ROLE_NAME,
+      DEFAULT_EVERYONE_PERMISSIONS,
+    );
+    // 1.6: "Ver canais" passou a existir; quem já estava no servidor continua vendo tudo (uma vez só)
+    const version = this.one<{ user_version: number }>("PRAGMA user_version")?.user_version ?? 0;
+    if (version < 1) {
+      this.run("UPDATE roles SET permissions = permissions | ? WHERE id = guild_id", PERMISSIONS.VIEW_CHANNEL);
+      this.db.exec("PRAGMA user_version = 1");
+    }
   }
 
   close(): void {
@@ -207,27 +300,347 @@ export class Store {
       const now = Date.now();
       this.run("INSERT INTO guilds (id, name, owner_id, created_at) VALUES (?, ?, ?, ?)", Number(guildId), name, Number(ownerId), now);
       this.run("INSERT INTO members (guild_id, user_id, joined_at) VALUES (?, ?, ?)", Number(guildId), Number(ownerId), now);
+      this.run("INSERT INTO roles (id, guild_id, name, color, position, permissions, hoist) VALUES (?, ?, ?, NULL, 0, ?, 0)", Number(guildId), Number(guildId), EVERYONE_ROLE_NAME, DEFAULT_EVERYONE_PERMISSIONS);
       this.run("INSERT INTO channels (id, guild_id, name, position, type) VALUES (?, ?, ?, 0, 'text')", Number(nextId()), Number(guildId), "geral");
       this.run("INSERT INTO channels (id, guild_id, name, position, type) VALUES (?, ?, ?, 1, 'voice')", Number(nextId()), Number(guildId), "Sala de voz");
     });
     return this.getGuild(guildId, live)!;
   }
 
-  getGuild(guildId: Id, live: LiveState): Guild | undefined {
+  /**
+   * O servidor como `viewerId` o vê: só os canais que ele pode ver (e só a voz desses canais).
+   * Sem `viewerId`, tudo (uso interno).
+   */
+  getGuild(guildId: Id, live: LiveState, viewerId?: Id): Guild | undefined {
     const row = this.one<GuildRow>("SELECT id, name, owner_id FROM guilds WHERE id = ?", Number(guildId));
     if (!row) return undefined;
-    const channels = this.all<ChannelRow>(`SELECT ${CHANNEL_COLUMNS} FROM channels WHERE guild_id = ? ORDER BY position, id`, row.id).map(toChannel);
-    const members = this.all<MemberRow>(
-      "SELECT u.id, u.username, u.display_name, m.joined_at FROM members m JOIN users u ON u.id = m.user_id WHERE m.guild_id = ? ORDER BY m.joined_at",
-      row.id,
-    ).map((r): Member => ({ user: toUser(r), joinedAt: r.joined_at, online: live.isOnline(String(r.id)) }));
     const id = String(row.id);
-    return { id, name: row.name, ownerId: String(row.owner_id), channels, members, voiceStates: live.voiceStatesOf(id) };
+    const now = Date.now();
+    const members = this.all<MemberRow & { timeout_until: number | null }>(
+      `SELECT u.id, u.username, u.display_name, m.joined_at, mo.timeout_until FROM members m JOIN users u ON u.id = m.user_id
+       LEFT JOIN moderation mo ON mo.guild_id = m.guild_id AND mo.user_id = m.user_id
+       WHERE m.guild_id = ? ORDER BY m.joined_at`,
+      row.id,
+    ).map((r): Member => ({
+      user: toUser(r),
+      joinedAt: r.joined_at,
+      online: live.isOnline(String(r.id)),
+      roles: [],
+      timeoutUntil: r.timeout_until !== null && r.timeout_until > now ? r.timeout_until : null,
+    }));
+    const byUser = new Map(members.map((m) => [m.user.id, m]));
+    for (const r of this.all<{ user_id: number; role_id: number }>("SELECT user_id, role_id FROM member_roles WHERE guild_id = ?", row.id)) {
+      byUser.get(String(r.user_id))?.roles.push(String(r.role_id));
+    }
+    const roles = this.rolesOf(id);
+    let channels = this.channelsOf(id);
+    let voiceStates = live.voiceStatesOf(id);
+    if (viewerId !== undefined) {
+      const ctx: PermissionContext = { guildId: id, ownerId: String(row.owner_id), roles };
+      const viewerRoles = byUser.get(viewerId)?.roles ?? [];
+      channels = channels.filter((c) => computeChannelPermissions(ctx, viewerId, viewerRoles, c.overwrites) & PERMISSIONS.VIEW_CHANNEL);
+      const visible = new Set(channels.map((c) => c.id));
+      voiceStates = voiceStates.filter((v) => visible.has(v.channelId));
+    }
+    return { id, name: row.name, ownerId: String(row.owner_id), channels, members, voiceStates, roles };
+  }
+
+  /** Canais do servidor com as sobrescritas (ordem de exibição). */
+  channelsOf(guildId: Id): Channel[] {
+    const overwrites = new Map<number, Overwrite[]>();
+    for (const r of this.all<OverwriteRow>(
+      "SELECT o.channel_id, o.target_type, o.target_id, o.allow, o.deny FROM channel_overwrites o JOIN channels c ON c.id = o.channel_id WHERE c.guild_id = ?",
+      Number(guildId),
+    )) {
+      overwrites.set(r.channel_id, [...(overwrites.get(r.channel_id) ?? []), toOverwrite(r)]);
+    }
+    return this.all<ChannelRow>(`SELECT ${CHANNEL_COLUMNS} FROM channels WHERE guild_id = ? ORDER BY position, id`, Number(guildId)).map((r) =>
+      toChannel(r, overwrites.get(r.id) ?? []),
+    );
+  }
+
+  ownerOf(guildId: Id): Id | undefined {
+    const row = this.one<{ owner_id: number }>("SELECT owner_id FROM guilds WHERE id = ?", Number(guildId));
+    return row ? String(row.owner_id) : undefined;
+  }
+
+  guildName(guildId: Id): string | undefined {
+    return this.one<{ name: string }>("SELECT name FROM guilds WHERE id = ?", Number(guildId))?.name;
+  }
+
+  renameGuild(guildId: Id, name: string): void {
+    this.run("UPDATE guilds SET name = ? WHERE id = ?", name, Number(guildId));
+  }
+
+  /** Apaga o servidor e tudo dele (canais, mensagens, cargos, convites…), por cascata. Devolve quem era membro. */
+  deleteGuild(guildId: Id): Id[] {
+    const members = this.memberIds(guildId);
+    this.run("DELETE FROM guilds WHERE id = ?", Number(guildId));
+    return members;
+  }
+
+  /* ---------- cargos e permissões ---------- */
+
+  rolesOf(guildId: Id): Role[] {
+    return this.all<RoleRow>(`SELECT ${ROLE_COLUMNS} FROM roles WHERE guild_id = ?`, Number(guildId)).map(toRole).sort(byPositionDesc);
+  }
+
+  getRole(roleId: Id): Role | undefined {
+    const row = this.one<RoleRow>(`SELECT ${ROLE_COLUMNS} FROM roles WHERE id = ?`, Number(roleId));
+    return row ? toRole(row) : undefined;
+  }
+
+  memberRoleIds(guildId: Id, userId: Id): Id[] {
+    return this.all<{ role_id: number }>("SELECT role_id FROM member_roles WHERE guild_id = ? AND user_id = ?", Number(guildId), Number(userId)).map((r) => String(r.role_id));
+  }
+
+  permissionContext(guildId: Id): PermissionContext | undefined {
+    const ownerId = this.ownerOf(guildId);
+    return ownerId ? { guildId, ownerId, roles: this.rolesOf(guildId) } : undefined;
+  }
+
+  /** Permissões efetivas no servidor (0 para quem não é membro; de castigo, só "Ver canais"). */
+  permissionsOf(guildId: Id, userId: Id): number {
+    const ctx = this.permissionContext(guildId);
+    if (!ctx || !this.isMember(guildId, userId)) return 0;
+    return applyTimeout(computePermissions(ctx, userId, this.memberRoleIds(guildId, userId)), this.timeoutOf(guildId, userId));
+  }
+
+  /** Permissões efetivas num canal (0 para quem não é membro ou não vê o canal). */
+  channelPermissionsOf(channel: Channel, userId: Id): number {
+    const ctx = this.permissionContext(channel.guildId);
+    if (!ctx || !this.isMember(channel.guildId, userId)) return 0;
+    return computeChannelPermissions(ctx, userId, this.memberRoleIds(channel.guildId, userId), channel.overwrites, this.timeoutOf(channel.guildId, userId));
+  }
+
+  /** Cargos de cada membro do servidor (quem não tem cargo aparece com lista vazia). */
+  private memberRoleMap(guildId: Id): Map<Id, Id[]> {
+    const map = new Map<Id, Id[]>(this.memberIds(guildId).map((id) => [id, []]));
+    for (const r of this.all<{ user_id: number; role_id: number }>("SELECT user_id, role_id FROM member_roles WHERE guild_id = ?", Number(guildId))) {
+      map.get(String(r.user_id))?.push(String(r.role_id));
+    }
+    return map;
+  }
+
+  /** Quem vê o canal (o castigo não esconde canais, então não entra aqui). */
+  channelViewerIds(channel: Channel): Id[] {
+    const ctx = this.permissionContext(channel.guildId);
+    if (!ctx) return [];
+    return [...this.memberRoleMap(channel.guildId)]
+      .filter(([userId, roleIds]) => computeChannelPermissions(ctx, userId, roleIds, channel.overwrites) & PERMISSIONS.VIEW_CHANNEL)
+      .map(([userId]) => userId);
+  }
+
+  /** Para cada membro, os canais que ele vê (antes/depois de mudar cargos ou sobrescritas). */
+  visibility(guildId: Id): Map<Id, Set<Id>> {
+    const ctx = this.permissionContext(guildId);
+    const result = new Map<Id, Set<Id>>();
+    if (!ctx) return result;
+    const channels = this.channelsOf(guildId);
+    for (const [userId, roleIds] of this.memberRoleMap(guildId)) {
+      result.set(userId, new Set(channels.filter((c) => computeChannelPermissions(ctx, userId, roleIds, c.overwrites) & PERMISSIONS.VIEW_CHANNEL).map((c) => c.id)));
+    }
+    return result;
+  }
+
+  /* ---------- sobrescritas por canal ---------- */
+
+  /** Grava (ou apaga, se não libera nem bloqueia nada) a sobrescrita. */
+  setOverwrite(channelId: Id, overwrite: Overwrite): void {
+    if (overwrite.allow === 0 && overwrite.deny === 0) {
+      this.deleteOverwrite(channelId, overwrite.targetType, overwrite.targetId);
+      return;
+    }
+    this.run(
+      `INSERT INTO channel_overwrites (channel_id, target_type, target_id, allow, deny) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (channel_id, target_type, target_id) DO UPDATE SET allow = excluded.allow, deny = excluded.deny`,
+      Number(channelId),
+      overwrite.targetType,
+      Number(overwrite.targetId),
+      overwrite.allow,
+      overwrite.deny,
+    );
+  }
+
+  deleteOverwrite(channelId: Id, targetType: Overwrite["targetType"], targetId: Id): boolean {
+    return this.change("DELETE FROM channel_overwrites WHERE channel_id = ? AND target_type = ? AND target_id = ?", Number(channelId), targetType, Number(targetId)) > 0;
+  }
+
+  /* ---------- castigo e silêncio na voz ---------- */
+
+  /** Fim do castigo (ms) se ainda valer; `null` = livre. */
+  timeoutOf(guildId: Id, userId: Id): number | null {
+    const until = this.one<{ timeout_until: number | null }>("SELECT timeout_until FROM moderation WHERE guild_id = ? AND user_id = ?", Number(guildId), Number(userId))?.timeout_until ?? null;
+    return until !== null && until > Date.now() ? until : null;
+  }
+
+  setTimeoutUntil(guildId: Id, userId: Id, until: number | null): void {
+    this.run(
+      `INSERT INTO moderation (guild_id, user_id, timeout_until) VALUES (?, ?, ?)
+       ON CONFLICT (guild_id, user_id) DO UPDATE SET timeout_until = excluded.timeout_until`,
+      Number(guildId),
+      Number(userId),
+      until,
+    );
+  }
+
+  isServerMuted(guildId: Id, userId: Id): boolean {
+    return this.one<{ server_muted: number }>("SELECT server_muted FROM moderation WHERE guild_id = ? AND user_id = ?", Number(guildId), Number(userId))?.server_muted === 1;
+  }
+
+  setServerMuted(guildId: Id, userId: Id, muted: boolean): void {
+    this.run(
+      `INSERT INTO moderation (guild_id, user_id, server_muted) VALUES (?, ?, ?)
+       ON CONFLICT (guild_id, user_id) DO UPDATE SET server_muted = excluded.server_muted`,
+      Number(guildId),
+      Number(userId),
+      muted ? 1 : 0,
+    );
+  }
+
+  /** Cargo novo entra logo acima do @todos (posição 1); os outros sobem um. */
+  createRole(guildId: Id, fields: Pick<Role, "name" | "color" | "permissions" | "hoist">): Role {
+    const id = nextId();
+    this.transaction(() => {
+      this.run("UPDATE roles SET position = position + 1 WHERE guild_id = ? AND position >= 1", Number(guildId));
+      this.run(
+        "INSERT INTO roles (id, guild_id, name, color, position, permissions, hoist) VALUES (?, ?, ?, ?, 1, ?, ?)",
+        Number(id),
+        Number(guildId),
+        fields.name,
+        fields.color,
+        fields.permissions,
+        fields.hoist ? 1 : 0,
+      );
+    });
+    return this.getRole(id)!;
+  }
+
+  updateRole(roleId: Id, fields: Pick<Role, "name" | "color" | "permissions" | "hoist">): void {
+    this.run("UPDATE roles SET name = ?, color = ?, permissions = ?, hoist = ? WHERE id = ?", fields.name, fields.color, fields.permissions, fields.hoist ? 1 : 0, Number(roleId));
+  }
+
+  /** Troca o cargo de lugar com o vizinho de cima ou de baixo (o @todos nunca sai do 0). */
+  swapRolePositions(a: Role, b: Role): void {
+    this.transaction(() => {
+      this.run("UPDATE roles SET position = ? WHERE id = ?", b.position, Number(a.id));
+      this.run("UPDATE roles SET position = ? WHERE id = ?", a.position, Number(b.id));
+    });
+  }
+
+  deleteRole(role: Role): void {
+    this.transaction(() => {
+      this.run("DELETE FROM channel_overwrites WHERE target_type = 'role' AND target_id = ?", Number(role.id));
+      this.run("DELETE FROM roles WHERE id = ?", Number(role.id));
+      this.run("UPDATE roles SET position = position - 1 WHERE guild_id = ? AND position > ?", Number(role.guildId), role.position);
+    });
+  }
+
+  /** Dá (`add`) ou tira o cargo. Devolve os cargos do membro depois da mudança. */
+  setMemberRole(guildId: Id, userId: Id, roleId: Id, add: boolean): Id[] {
+    if (add) this.run("INSERT OR IGNORE INTO member_roles (guild_id, user_id, role_id) VALUES (?, ?, ?)", Number(guildId), Number(userId), Number(roleId));
+    else this.run("DELETE FROM member_roles WHERE guild_id = ? AND user_id = ? AND role_id = ?", Number(guildId), Number(userId), Number(roleId));
+    return this.memberRoleIds(guildId, userId);
+  }
+
+  getMember(guildId: Id, userId: Id): { user: User; roles: Id[] } | undefined {
+    const row = this.one<UserRow>("SELECT u.id, u.username, u.display_name FROM members m JOIN users u ON u.id = m.user_id WHERE m.guild_id = ? AND m.user_id = ?", Number(guildId), Number(userId));
+    return row ? { user: toUser(row), roles: this.memberRoleIds(guildId, userId) } : undefined;
+  }
+
+  getUser(userId: Id): User | undefined {
+    const row = this.one<UserRow>("SELECT id, username, display_name FROM users WHERE id = ?", Number(userId));
+    return row ? toUser(row) : undefined;
+  }
+
+  /** Tira a pessoa do servidor (sair, ser expulsa ou banida); os cargos e as sobrescritas dela vão junto. */
+  removeMember(guildId: Id, userId: Id): void {
+    this.transaction(() => {
+      this.dropMemberOverwrites(guildId, userId);
+      this.run("DELETE FROM members WHERE guild_id = ? AND user_id = ?", Number(guildId), Number(userId));
+    });
+  }
+
+  private dropMemberOverwrites(guildId: Id, userId: Id): void {
+    this.run(
+      "DELETE FROM channel_overwrites WHERE target_type = 'member' AND target_id = ? AND channel_id IN (SELECT id FROM channels WHERE guild_id = ?)",
+      Number(userId),
+      Number(guildId),
+    );
+  }
+
+  /* ---------- banimentos ---------- */
+
+  ban(guildId: Id, userId: Id, reason: string | null, bannedBy: Id): void {
+    this.transaction(() => {
+      this.run(
+        "INSERT INTO bans (guild_id, user_id, reason, banned_by, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (guild_id, user_id) DO UPDATE SET reason = excluded.reason, banned_by = excluded.banned_by",
+        Number(guildId),
+        Number(userId),
+        reason,
+        Number(bannedBy),
+        Date.now(),
+      );
+      this.dropMemberOverwrites(guildId, userId);
+      this.run("DELETE FROM members WHERE guild_id = ? AND user_id = ?", Number(guildId), Number(userId));
+    });
+  }
+
+  isBanned(guildId: Id, userId: Id): boolean {
+    return this.one("SELECT 1 FROM bans WHERE guild_id = ? AND user_id = ?", Number(guildId), Number(userId)) !== undefined;
+  }
+
+  unban(guildId: Id, userId: Id): boolean {
+    return this.change("DELETE FROM bans WHERE guild_id = ? AND user_id = ?", Number(guildId), Number(userId)) > 0;
+  }
+
+  bansOf(guildId: Id): Ban[] {
+    return this.all<{ id: number; username: string; display_name: string; reason: string | null; created_at: number; by_id: number | null; by_username: string | null; by_display_name: string | null }>(
+      `SELECT u.id, u.username, u.display_name, b.reason, b.created_at, bu.id AS by_id, bu.username AS by_username, bu.display_name AS by_display_name
+       FROM bans b JOIN users u ON u.id = b.user_id LEFT JOIN users bu ON bu.id = b.banned_by
+       WHERE b.guild_id = ? ORDER BY b.created_at DESC`,
+      Number(guildId),
+    ).map((r) => ({ user: toUser(r), reason: r.reason, bannedBy: userOrNull(r.by_id, r.by_username, r.by_display_name), createdAt: r.created_at }));
+  }
+
+  /* ---------- registro de auditoria ---------- */
+
+  audit(guildId: Id, actorId: Id, action: AuditAction, targetName: string, detail: string | null = null): void {
+    this.run(
+      "INSERT INTO audit_log (id, guild_id, actor_id, action, target_name, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      Number(nextId()),
+      Number(guildId),
+      Number(actorId),
+      action,
+      targetName,
+      detail,
+      Date.now(),
+    );
+  }
+
+  auditLog(guildId: Id, before: Id | null, limit: number): AuditLogEntry[] {
+    return this.all<{ id: number; actor_id: number | null; username: string | null; display_name: string | null; action: AuditAction; target_name: string; detail: string | null; created_at: number }>(
+      `SELECT a.id, a.actor_id, u.username, u.display_name, a.action, a.target_name, a.detail, a.created_at
+       FROM audit_log a LEFT JOIN users u ON u.id = a.actor_id
+       WHERE a.guild_id = ? AND (? IS NULL OR a.id < ?) ORDER BY a.id DESC LIMIT ?`,
+      Number(guildId),
+      before === null ? null : Number(before),
+      before === null ? null : Number(before),
+      limit,
+    ).map((r) => ({
+      id: String(r.id),
+      guildId,
+      actor: userOrNull(r.actor_id, r.username, r.display_name),
+      action: r.action,
+      targetName: r.target_name,
+      detail: r.detail,
+      createdAt: r.created_at,
+    }));
   }
 
   guildsOf(userId: Id, live: LiveState): Guild[] {
     return this.all<{ guild_id: number }>("SELECT guild_id FROM members WHERE user_id = ? ORDER BY joined_at", Number(userId))
-      .map((r) => this.getGuild(String(r.guild_id), live))
+      .map((r) => this.getGuild(String(r.guild_id), live, userId))
       .filter((g): g is Guild => g !== undefined);
   }
 
@@ -251,20 +664,38 @@ export class Store {
   addMember(guildId: Id, user: User, live: LiveState): Member {
     const joinedAt = Date.now();
     this.run("INSERT INTO members (guild_id, user_id, joined_at) VALUES (?, ?, ?)", Number(guildId), Number(user.id), joinedAt);
-    return { user, joinedAt, online: live.isOnline(user.id) };
+    return { user, joinedAt, online: live.isOnline(user.id), roles: [], timeoutUntil: this.timeoutOf(guildId, user.id) };
   }
 
   getChannel(channelId: Id): Channel | undefined {
     const row = this.one<ChannelRow>(`SELECT ${CHANNEL_COLUMNS} FROM channels WHERE id = ?`, Number(channelId));
-    return row ? toChannel(row) : undefined;
+    if (!row) return undefined;
+    const overwrites = this.all<OverwriteRow>("SELECT channel_id, target_type, target_id, allow, deny FROM channel_overwrites WHERE channel_id = ?", row.id).map(toOverwrite);
+    return toChannel(row, overwrites);
   }
 
-  createChannel(guildId: Id, name: string, type: ChannelType = "text"): Channel {
+  renameChannel(channelId: Id, name: string): void {
+    this.run("UPDATE channels SET name = ? WHERE id = ?", name, Number(channelId));
+  }
+
+  /** Apaga o canal com as mensagens, reações e leituras dele (cascata). */
+  deleteChannel(channelId: Id): void {
+    this.run("DELETE FROM channels WHERE id = ?", Number(channelId));
+  }
+
+  countChannels(guildId: Id, type: ChannelType): number {
+    return this.one<{ n: number }>("SELECT COUNT(*) AS n FROM channels WHERE guild_id = ? AND type = ?", Number(guildId), type)?.n ?? 0;
+  }
+
+  createChannel(guildId: Id, name: string, type: ChannelType = "text", overwrites: Overwrite[] = []): Channel {
     const id = nextId();
-    const max = this.one<{ p: number | null }>("SELECT MAX(position) AS p FROM channels WHERE guild_id = ?", Number(guildId));
-    const position = (max?.p ?? -1) + 1;
-    this.run("INSERT INTO channels (id, guild_id, name, position, type) VALUES (?, ?, ?, ?, ?)", Number(id), Number(guildId), name, position, type);
-    return { id, guildId, type, name, position };
+    this.transaction(() => {
+      const max = this.one<{ p: number | null }>("SELECT MAX(position) AS p FROM channels WHERE guild_id = ?", Number(guildId));
+      const position = (max?.p ?? -1) + 1;
+      this.run("INSERT INTO channels (id, guild_id, name, position, type) VALUES (?, ?, ?, ?, ?)", Number(id), Number(guildId), name, position, type);
+      for (const overwrite of overwrites) this.setOverwrite(id, overwrite);
+    });
+    return this.getChannel(id)!;
   }
 
   /* ---------- convites ---------- */
@@ -286,6 +717,18 @@ export class Store {
 
   countInviteUse(code: string): void {
     this.run("UPDATE invites SET uses = uses + 1 WHERE code = ?", code);
+  }
+
+  invitesOf(guildId: Id): InviteDetails[] {
+    return this.all<{ code: string; uses: number; created_at: number; id: number | null; username: string | null; display_name: string | null }>(
+      `SELECT i.code, i.uses, i.created_at, u.id, u.username, u.display_name
+       FROM invites i LEFT JOIN users u ON u.id = i.created_by WHERE i.guild_id = ? ORDER BY i.created_at DESC`,
+      Number(guildId),
+    ).map((r) => ({ code: r.code, guildId, uses: r.uses, createdAt: r.created_at, createdBy: userOrNull(r.id, r.username, r.display_name) }));
+  }
+
+  deleteInvite(code: string): boolean {
+    return this.change("DELETE FROM invites WHERE code = ?", code) > 0;
   }
 
   /* ---------- mensagens ---------- */

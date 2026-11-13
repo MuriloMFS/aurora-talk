@@ -1,14 +1,5 @@
 import type { WebSocket } from "ws";
-import {
-  CLOSE_CODES,
-  HEARTBEAT_INTERVAL_MS,
-  V2_EVENTS,
-  type ClientFrame,
-  type DispatchEvent,
-  type Id,
-  type ServerFrame,
-  type VoiceState,
-} from "@aurora/schema";
+import { hasPermission, CLOSE_CODES, HEARTBEAT_INTERVAL_MS, V2_EVENTS, type Channel, type ClientFrame, type DispatchEvent, type Id, type ServerFrame, type VoiceState } from "@aurora/schema";
 import { hashToken } from "./auth.ts";
 import { RateLimiter } from "./rate-limit.ts";
 import type { LiveState, Store } from "./store.ts";
@@ -120,7 +111,10 @@ export class Gateway implements LiveState {
         const first = this.register(connection);
         lastHeartbeat = Date.now();
         const guilds = this.store.guildsOf(user.id, this);
-        send(connection.version >= 2 ? { op: "ready", user, guilds, readStates: this.store.readStatesOf(user.id) } : { op: "ready", user, guilds });
+        // leitura só dos canais que a pessoa vê (canal privado não aparece nem como "não lido")
+        const visible = new Set(guilds.flatMap((g) => g.channels.map((c) => c.id)));
+        const readStates = this.store.readStatesOf(user.id).filter((r) => visible.has(r.channelId));
+        send(connection.version >= 2 ? { op: "ready", user, guilds, readStates } : { op: "ready", user, guilds });
         if (first) this.broadcastPresence(user.id, true);
         return;
       }
@@ -128,9 +122,10 @@ export class Gateway implements LiveState {
       switch (frame.op) {
         case "typing": {
           const channel = this.store.getChannel(frame.channelId);
-          if (!channel || channel.type !== "text" || !this.store.isMember(channel.guildId, connection.userId)) return;
+          if (!channel || channel.type !== "text") return;
+          if (!hasPermission(this.store.channelPermissionsOf(channel, connection.userId), "SEND_MESSAGES")) return;
           if (!this.typingLimiter.allow(`${connection.userId}:${channel.id}`)) return;
-          this.dispatchToGuild(channel.guildId, { t: "TYPING_START", d: { channelId: channel.id, userId: connection.userId } }, connection.userId);
+          this.dispatchToChannel(channel, { t: "TYPING_START", d: { channelId: channel.id, userId: connection.userId } }, connection.userId);
           return;
         }
         case "voice_join":
@@ -139,7 +134,10 @@ export class Gateway implements LiveState {
         case "voice_state": {
           const session = this.voice.get(connection.userId);
           if (!session || session.connection !== connection) return;
-          session.state = { ...session.state, muted: frame.muted || frame.deafened, deafened: frame.deafened, streaming: frame.streaming };
+          // "AO VIVO" só para quem pode transmitir neste canal (a credencial do LiveKit também barra o vídeo)
+          const channel = this.store.getChannel(session.state.channelId);
+          const streaming = frame.streaming && channel !== undefined && hasPermission(this.store.channelPermissionsOf(channel, connection.userId), "STREAM");
+          session.state = { ...session.state, muted: frame.muted || frame.deafened || Boolean(session.state.serverMuted), deafened: frame.deafened, streaming };
           this.dispatchVoice(session.guildId, session.state);
           return;
         }
@@ -194,14 +192,73 @@ export class Gateway implements LiveState {
     this.dispatchToUsers(this.store.memberIds(guildId), event, exceptUserId);
   }
 
+  /** Só para quem vê o canal (mensagens, reações, digitação e voz de canal privado não vazam). */
+  dispatchToChannel(channel: Channel, event: DispatchEvent, exceptUserId?: Id): void {
+    this.dispatchToUsers(this.store.channelViewerIds(channel), event, exceptUserId);
+  }
+
   /* ---------- voz ---------- */
+
+  /* ---------- voz: usado pela API (moderação, canais e servidores apagados) ---------- */
+
+  /** Canal de voz em que a pessoa está agora (ou null). */
+  voiceChannelOf(userId: Id): Id | null {
+    return this.voice.get(userId)?.state.channelId ?? null;
+  }
+
+  /** Quem está na voz deste servidor. */
+  voiceMembersOf(guildId: Id): { userId: Id; channelId: Id }[] {
+    return [...this.voice.values()].filter((s) => s.guildId === guildId).map((s) => ({ userId: s.state.userId, channelId: s.state.channelId }));
+  }
+
+  /** Tira a pessoa da voz deste servidor (expulsa, banida, saiu ou perdeu "Conectar"). */
+  leaveVoiceIn(guildId: Id, userId: Id): void {
+    if (this.voice.get(userId)?.guildId === guildId) this.leaveVoice(userId);
+  }
+
+  /** Canal de voz apagado: todo mundo que estava nele sai. */
+  leaveVoiceChannel(channelId: Id): void {
+    for (const [userId, session] of [...this.voice]) if (session.state.channelId === channelId) this.leaveVoice(userId);
+  }
+
+  /** Servidor apagado: esquece a voz dele sem avisar ninguém (o GUILD_DELETE já avisa). */
+  forgetGuild(guildId: Id): void {
+    for (const [userId, session] of [...this.voice]) if (session.guildId === guildId) this.voice.delete(userId);
+  }
+
+  /**
+   * Um moderador levou a pessoa para outra sala: o estado muda aqui na hora (sem "saiu e entrou") e
+   * o app dela troca de sala ao receber o VOICE_MOVE. Devolve a sala de onde ela saiu.
+   */
+  moveVoice(userId: Id, to: Channel): Id | null {
+    const session = this.voice.get(userId);
+    if (!session || session.guildId !== to.guildId || session.state.channelId === to.id) return null;
+    const from = this.store.getChannel(session.state.channelId);
+    session.state = { ...session.state, channelId: to.id, streaming: false };
+    const toViewers = new Set(this.store.channelViewerIds(to));
+    const left = from ? this.store.channelViewerIds(from).filter((id) => !toViewers.has(id)) : [];
+    this.dispatchToUsers(left, { t: "VOICE_STATE_UPDATE", d: { guildId: to.guildId, userId, channelId: null, muted: false, deafened: false, streaming: false } });
+    this.dispatchToUsers(toViewers, { t: "VOICE_STATE_UPDATE", d: { guildId: to.guildId, ...session.state } });
+    this.dispatchToUser(userId, { t: "VOICE_MOVE", d: { guildId: to.guildId, channelId: to.id } });
+    return from?.id ?? null;
+  }
+
+  /** Silêncio de moderador: vale na hora para quem está na voz deste servidor (o banco guarda para as próximas vezes). */
+  setServerMuted(guildId: Id, userId: Id, serverMuted: boolean): void {
+    const session = this.voice.get(userId);
+    if (!session || session.guildId !== guildId || Boolean(session.state.serverMuted) === serverMuted) return;
+    session.state = { ...session.state, serverMuted, muted: serverMuted || session.state.muted };
+    this.dispatchVoice(guildId, session.state);
+  }
 
   private joinVoice(connection: Connection, channelId: Id, muted: boolean, deafened: boolean): void {
     const channel = this.store.getChannel(channelId);
-    if (!channel || channel.type !== "voice" || !this.store.isMember(channel.guildId, connection.userId)) return;
+    if (!channel || channel.type !== "voice") return;
+    if (!hasPermission(this.store.channelPermissionsOf(channel, connection.userId), "CONNECT")) return;
     const previous = this.voice.get(connection.userId);
     if (previous && previous.state.channelId !== channel.id) this.leaveVoice(connection.userId);
-    const state: VoiceState = { userId: connection.userId, channelId: channel.id, muted: muted || deafened, deafened, streaming: false };
+    const serverMuted = this.store.isServerMuted(channel.guildId, connection.userId);
+    const state: VoiceState = { userId: connection.userId, channelId: channel.id, muted: muted || deafened || serverMuted, deafened, streaming: false, serverMuted };
     this.voice.set(connection.userId, { guildId: channel.guildId, state, connection });
     this.dispatchVoice(channel.guildId, state);
   }
@@ -210,14 +267,20 @@ export class Gateway implements LiveState {
     const session = this.voice.get(userId);
     if (!session) return;
     this.voice.delete(userId);
-    this.dispatchToGuild(session.guildId, {
+    const event: DispatchEvent = {
       t: "VOICE_STATE_UPDATE",
       d: { guildId: session.guildId, userId, channelId: null, muted: false, deafened: false, streaming: false },
-    });
+    };
+    const channel = this.store.getChannel(session.state.channelId);
+    // a pessoa sempre fica sabendo (outro aparelho dela pode estar sem ver o canal)
+    if (channel) this.dispatchToUsers(new Set([...this.store.channelViewerIds(channel), userId]), event);
+    else this.dispatchToGuild(session.guildId, event);
   }
 
   private dispatchVoice(guildId: Id, state: VoiceState): void {
-    this.dispatchToGuild(guildId, { t: "VOICE_STATE_UPDATE", d: { guildId, ...state } });
+    const channel = this.store.getChannel(state.channelId);
+    const event: DispatchEvent = { t: "VOICE_STATE_UPDATE", d: { guildId, ...state } };
+    if (channel) this.dispatchToUsers(new Set([...this.store.channelViewerIds(channel), state.userId]), event);
   }
 
   /* ---------- presença ---------- */

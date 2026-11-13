@@ -1,5 +1,20 @@
 import { useSyncExternalStore } from "react";
-import type { Channel, DispatchEvent, Guild, Id, Member, Message, ReadState, User, VoiceState } from "@aurora/schema";
+import {
+  applyTimeout,
+  byPositionDesc,
+  computeChannelPermissions,
+  computePermissions,
+  type Channel,
+  type DispatchEvent,
+  type Guild,
+  type Id,
+  type Member,
+  type Message,
+  type ReadState,
+  type Role,
+  type User,
+  type VoiceState,
+} from "@aurora/schema";
 import type { ConnectionStatus } from "../net/gateway";
 
 export const TYPING_TTL_MS = 8_000;
@@ -9,6 +24,8 @@ export interface GuildEntry {
   name: string;
   ownerId: Id;
   channelIds: Id[];
+  /** Do mais alto para o mais baixo; o @todos (id = id do servidor) por último. */
+  roles: Role[];
 }
 
 export interface ChannelMessages {
@@ -79,6 +96,31 @@ export const isUnread = (state: ChatState, channelId: Id): boolean => {
 };
 export const mentionCountOf = (state: ChatState, channelId: Id): number => state.reads[channelId]?.mentionCount ?? 0;
 
+/** Minhas permissões neste servidor (o servidor confere de novo; aqui só serve para esconder o que não posso). */
+export function myPermissions(state: ChatState, guildId: Id, now: number = Date.now()): number {
+  const guild = state.guilds[guildId];
+  const me = state.me;
+  if (!guild || !me) return 0;
+  const member = state.members[guildId]?.[me.id];
+  return applyTimeout(computePermissions({ guildId, ownerId: guild.ownerId, roles: guild.roles }, me.id, member?.roles ?? []), member?.timeoutUntil, now);
+}
+
+/** Minhas permissões neste canal (sobrescritas e castigo incluídos). */
+export function myChannelPermissions(state: ChatState, channelId: Id, now: number = Date.now()): number {
+  const channel = state.channels[channelId];
+  const guild = channel ? state.guilds[channel.guildId] : undefined;
+  const me = state.me;
+  if (!channel || !guild || !me) return 0;
+  const member = state.members[guild.id]?.[me.id];
+  return computeChannelPermissions({ guildId: guild.id, ownerId: guild.ownerId, roles: guild.roles }, me.id, member?.roles ?? [], channel.overwrites ?? [], member?.timeoutUntil ?? null, now);
+}
+
+/** Fim do meu castigo neste servidor (ou `null`). */
+export function myTimeout(state: ChatState, guildId: Id, now: number = Date.now()): number | null {
+  const until = state.me ? state.members[guildId]?.[state.me.id]?.timeoutUntil : null;
+  return until != null && until > now ? until : null;
+}
+
 function mergeMessages(current: Message[], incoming: Message[]): Message[] {
   const map = new Map(current.map((m) => [m.id, m]));
   for (const m of incoming) map.set(m.id, m);
@@ -98,9 +140,9 @@ function markRead(state: ChatState, channelId: Id | null): ChatState {
 
 function withGuild(state: ChatState, guild: Guild): ChatState {
   const channels = { ...state.channels };
-  for (const channel of guild.channels) channels[channel.id] = channel;
+  for (const channel of guild.channels) channels[channel.id] = { ...channel, overwrites: channel.overwrites ?? [] };
   const members: Record<Id, Member> = {};
-  for (const member of guild.members) members[member.user.id] = member;
+  for (const member of guild.members) members[member.user.id] = { ...member, roles: member.roles ?? [] };
   const voice: Record<Id, VoiceState> = {};
   for (const state of guild.voiceStates ?? []) voice[state.userId] = state;
   return {
@@ -113,6 +155,7 @@ function withGuild(state: ChatState, guild: Guild): ChatState {
         name: guild.name,
         ownerId: guild.ownerId,
         channelIds: [...guild.channels].sort((a, b) => a.position - b.position || byId(a, b)).map((c) => c.id),
+        roles: [...(guild.roles ?? [])].sort(byPositionDesc),
       },
     },
     channels,
@@ -143,10 +186,29 @@ function withUser(state: ChatState, user: User): ChatState {
   return { ...state, me: state.me?.id === user.id ? user : state.me, members, messages };
 }
 
+/** Tira canais do estado (canal apagado ou servidor que saiu da minha lista), com mensagens e leituras. */
+function withoutChannels(state: ChatState, channelIds: readonly Id[]): ChatState {
+  if (channelIds.length === 0) return state;
+  const drop = new Set(channelIds);
+  const keep = <T,>(record: Record<Id, T>) => Object.fromEntries(Object.entries(record).filter(([id]) => !drop.has(id)));
+  return { ...state, channels: keep(state.channels), messages: keep(state.messages), reads: keep(state.reads), typing: keep(state.typing) };
+}
+
+/** Servidor apagado, ou eu saí/fui expulso/banido: some tudo dele. */
+function withoutGuild(state: ChatState, guildId: Id): ChatState {
+  const guild = state.guilds[guildId];
+  if (!guild) return state;
+  const next = withoutChannels(state, guild.channelIds);
+  const { [guildId]: _guild, ...guilds } = next.guilds;
+  const { [guildId]: _members, ...members } = next.members;
+  const { [guildId]: _voice, ...voice } = next.voice;
+  return { ...next, guilds, members, voice, guildOrder: next.guildOrder.filter((id) => id !== guildId) };
+}
+
 function withChannel(state: ChatState, channel: Channel): ChatState {
   const guild = state.guilds[channel.guildId];
   if (!guild) return state;
-  const channels = { ...state.channels, [channel.id]: channel };
+  const channels = { ...state.channels, [channel.id]: { ...channel, overwrites: channel.overwrites ?? [] } };
   const channelIds = guild.channelIds.includes(channel.id)
     ? guild.channelIds
     : [...guild.channelIds, channel.id].sort((a, b) => (channels[a]?.position ?? 0) - (channels[b]?.position ?? 0));
@@ -250,11 +312,56 @@ function applyDispatch(state: ChatState, event: DispatchEvent, now: number): Cha
     }
     case "USER_UPDATE":
       return withUser(state, event.d);
+    case "GUILD_UPDATE": {
+      const guild = state.guilds[event.d.id];
+      return guild ? { ...state, guilds: { ...state.guilds, [guild.id]: { ...guild, name: event.d.name } } } : state;
+    }
+    case "GUILD_DELETE":
+      return withoutGuild(state, event.d.id);
+    case "GUILD_ROLES_UPDATE": {
+      const guild = state.guilds[event.d.guildId];
+      if (!guild) return state;
+      const roles = [...event.d.roles].sort(byPositionDesc);
+      const alive = new Set(roles.map((r) => r.id));
+      // cargo excluído: sai também de quem o tinha
+      const members = Object.fromEntries(
+        Object.entries(state.members[guild.id] ?? {}).map(([id, m]) => [id, m.roles.every((r) => alive.has(r)) ? m : { ...m, roles: m.roles.filter((r) => alive.has(r)) }]),
+      );
+      return { ...state, guilds: { ...state.guilds, [guild.id]: { ...guild, roles } }, members: { ...state.members, [guild.id]: members } };
+    }
+    case "MEMBER_UPDATE": {
+      const member = state.members[event.d.guildId]?.[event.d.userId];
+      if (!member) return state;
+      const timeoutUntil = event.d.timeoutUntil === undefined ? member.timeoutUntil : event.d.timeoutUntil;
+      return { ...state, members: { ...state.members, [event.d.guildId]: { ...state.members[event.d.guildId], [event.d.userId]: { ...member, roles: event.d.roles, timeoutUntil } } } };
+    }
+    case "MEMBER_REMOVE": {
+      if (event.d.userId === state.me?.id) return withoutGuild(state, event.d.guildId);
+      const guildMembers = state.members[event.d.guildId];
+      if (!guildMembers?.[event.d.userId]) return state;
+      const { [event.d.userId]: _removed, ...rest } = guildMembers;
+      const { [event.d.userId]: _voice, ...voice } = state.voice[event.d.guildId] ?? {};
+      return { ...state, members: { ...state.members, [event.d.guildId]: rest }, voice: { ...state.voice, [event.d.guildId]: voice } };
+    }
+    case "CHANNEL_UPDATE":
+      return state.channels[event.d.id] ? withChannel(state, event.d) : state;
+    case "CHANNEL_DELETE": {
+      // canal apagado, ou deixei de ver (canal privado): some com quem estava na voz dele
+      const guild = state.guilds[event.d.guildId];
+      if (!guild) return state;
+      const next = withoutChannels(state, [event.d.id]);
+      const voice = Object.fromEntries(Object.entries(state.voice[guild.id] ?? {}).filter(([, v]) => v.channelId !== event.d.id));
+      return {
+        ...next,
+        guilds: { ...next.guilds, [guild.id]: { ...guild, channelIds: guild.channelIds.filter((id) => id !== event.d.id) } },
+        voice: { ...next.voice, [guild.id]: voice },
+      };
+    }
     case "VOICE_STATE_UPDATE": {
-      const { guildId, userId, channelId, muted, deafened, streaming } = event.d;
+      const { guildId, userId, channelId, muted, deafened, streaming, serverMuted } = event.d;
       const guildVoice = { ...state.voice[guildId] };
       if (channelId === null) delete guildVoice[userId];
-      else guildVoice[userId] = { userId, channelId, muted, deafened, streaming };
+      else guildVoice[userId] = { userId, channelId, muted, deafened, streaming, serverMuted: serverMuted ?? false };
       return { ...state, voice: { ...state.voice, [guildId]: guildVoice } };
     }
     default:

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Guild, Message, User } from "@aurora/schema";
-import { TYPING_TTL_MS, chatReducer, initialChatState, isUnread, mentionCountOf, type ChatState } from "./chat-store";
+import { DEFAULT_EVERYONE_PERMISSIONS, PERMISSIONS, hasPermission, type Guild, type Message, type User } from "@aurora/schema";
+import { TYPING_TTL_MS, chatReducer, initialChatState, isUnread, mentionCountOf, myChannelPermissions, myPermissions, myTimeout, type ChatState } from "./chat-store";
 
 const ana: User = { id: "1", username: "ana", displayName: "Ana" };
 const bia: User = { id: "2", username: "bia", displayName: "Bia" };
@@ -9,15 +9,19 @@ const guild: Guild = {
   name: "Aurora",
   ownerId: "1",
   channels: [
-    { id: "21", guildId: "10", type: "text", name: "design", position: 1 },
-    { id: "20", guildId: "10", type: "text", name: "geral", position: 0 },
-    { id: "30", guildId: "10", type: "voice", name: "Sala de voz", position: 2 },
+    { id: "21", guildId: "10", type: "text", name: "design", position: 1, overwrites: [] },
+    { id: "20", guildId: "10", type: "text", name: "geral", position: 0, overwrites: [] },
+    { id: "30", guildId: "10", type: "voice", name: "Sala de voz", position: 2, overwrites: [] },
   ],
   members: [
-    { user: ana, joinedAt: 1, online: true },
-    { user: bia, joinedAt: 2, online: false },
+    { user: ana, joinedAt: 1, online: true, roles: [] },
+    { user: bia, joinedAt: 2, online: false, roles: ["50"] },
   ],
   voiceStates: [{ userId: "2", channelId: "30", muted: false, deafened: false, streaming: false }],
+  roles: [
+    { id: "10", guildId: "10", name: "@todos", color: null, position: 0, permissions: DEFAULT_EVERYONE_PERMISSIONS, hoist: false },
+    { id: "50", guildId: "10", name: "Moderação", color: 2, position: 1, permissions: PERMISSIONS.KICK_MEMBERS, hoist: true },
+  ],
 };
 const msg = (id: string, author: User, channelId = "20", content = id, mentions: string[] = []): Message => ({
   id,
@@ -158,6 +162,69 @@ describe("chatReducer", () => {
     expect(state.me?.displayName).toBe("Ana Clara");
   });
 
+  it("cargos: minhas permissões mudam ao vivo; cargo excluído sai de quem tinha", () => {
+    let state = chatReducer(initialChatState, { type: "ready", user: bia, guilds: [guild] });
+    expect(hasPermission(myPermissions(state, "10"), "KICK_MEMBERS")).toBe(true);
+    const dispatch = (s: ChatState, event: Extract<Parameters<typeof chatReducer>[1], { type: "dispatch" }>["event"]) => chatReducer(s, { type: "dispatch", event, now: 0 });
+    state = dispatch(state, { t: "MEMBER_UPDATE", d: { guildId: "10", userId: "2", roles: [] } });
+    expect(hasPermission(myPermissions(state, "10"), "KICK_MEMBERS")).toBe(false);
+    state = dispatch(state, { t: "MEMBER_UPDATE", d: { guildId: "10", userId: "2", roles: ["50"] } });
+    state = dispatch(state, { t: "GUILD_ROLES_UPDATE", d: { guildId: "10", roles: [guild.roles[0]!] } });
+    expect(state.members["10"]?.["2"]?.roles).toEqual([]);
+    expect(state.guilds["10"]?.roles.map((r) => r.name)).toEqual(["@todos"]);
+    expect(myPermissions(state, "10")).toBe(DEFAULT_EVERYONE_PERMISSIONS);
+  });
+
+  it("permissões por canal: canal só de leitura, liberado só para mim; castigo vale até a hora marcada", () => {
+    let state = chatReducer(initialChatState, { type: "ready", user: bia, guilds: [guild] });
+    const dispatch = (s: ChatState, event: Extract<Parameters<typeof chatReducer>[1], { type: "dispatch" }>["event"]) => chatReducer(s, { type: "dispatch", event, now: 0 });
+    const readOnly = { id: "20", guildId: "10", type: "text" as const, name: "geral", position: 0, overwrites: [{ targetType: "role" as const, targetId: "10", allow: 0, deny: PERMISSIONS.SEND_MESSAGES }] };
+    state = dispatch(state, { t: "CHANNEL_UPDATE", d: readOnly });
+    expect(hasPermission(myChannelPermissions(state, "20"), "SEND_MESSAGES")).toBe(false);
+    expect(hasPermission(myChannelPermissions(state, "21"), "SEND_MESSAGES")).toBe(true);
+    state = dispatch(state, { t: "CHANNEL_UPDATE", d: { ...readOnly, overwrites: [...readOnly.overwrites, { targetType: "member", targetId: "2", allow: PERMISSIONS.SEND_MESSAGES, deny: 0 }] } });
+    expect(hasPermission(myChannelPermissions(state, "20"), "SEND_MESSAGES")).toBe(true);
+
+    state = dispatch(state, { t: "MEMBER_UPDATE", d: { guildId: "10", userId: "2", roles: ["50"], timeoutUntil: 5_000 } });
+    expect(myTimeout(state, "10", 1_000)).toBe(5_000);
+    expect(myChannelPermissions(state, "21", 1_000)).toBe(PERMISSIONS.VIEW_CHANNEL);
+    expect(hasPermission(myPermissions(state, "10", 1_000), "CREATE_INVITE")).toBe(false);
+    expect(hasPermission(myChannelPermissions(state, "21", 5_000), "SEND_MESSAGES")).toBe(true); // acabou
+    // MEMBER_UPDATE de cargo (servidor antigo, sem o campo) não apaga o castigo
+    state = dispatch(state, { t: "MEMBER_UPDATE", d: { guildId: "10", userId: "2", roles: [] } });
+    expect(myTimeout(state, "10", 1_000)).toBe(5_000);
+  });
+
+  it("voz: silêncio de moderador chega no estado; deixar de ver a sala some com quem está nela", () => {
+    let state = ready();
+    const dispatch = (s: ChatState, event: Extract<Parameters<typeof chatReducer>[1], { type: "dispatch" }>["event"]) => chatReducer(s, { type: "dispatch", event, now: 0 });
+    state = dispatch(state, { t: "VOICE_STATE_UPDATE", d: { guildId: "10", userId: "2", channelId: "30", muted: true, deafened: false, streaming: false, serverMuted: true } });
+    expect(state.voice["10"]?.["2"]?.serverMuted).toBe(true);
+    state = dispatch(state, { t: "CHANNEL_DELETE", d: { id: "30", guildId: "10" } });
+    expect(state.voice["10"]?.["2"]).toBeUndefined();
+    expect(chatReducer(state, { type: "dispatch", event: { t: "VOICE_MOVE", d: { guildId: "10", channelId: null } }, now: 0 })).toBe(state); // o ChatApp é quem age
+  });
+
+  it("canal renomeado e apagado; servidor renomeado; expulsão de outra pessoa e a minha", () => {
+    let state = create(ready(), msg("100", bia));
+    const dispatch = (s: ChatState, event: Extract<Parameters<typeof chatReducer>[1], { type: "dispatch" }>["event"]) => chatReducer(s, { type: "dispatch", event, now: 0 });
+    state = dispatch(state, { t: "CHANNEL_UPDATE", d: { id: "21", guildId: "10", type: "text", name: "arte", position: 1, overwrites: [] } });
+    expect(state.channels["21"]?.name).toBe("arte");
+    state = dispatch(state, { t: "CHANNEL_DELETE", d: { id: "21", guildId: "10" } });
+    expect(state.channels["21"]).toBeUndefined();
+    expect(state.guilds["10"]?.channelIds).not.toContain("21");
+    state = dispatch(state, { t: "GUILD_UPDATE", d: { id: "10", name: "Aurora Turma" } });
+    expect(state.guilds["10"]?.name).toBe("Aurora Turma");
+    state = dispatch(state, { t: "MEMBER_REMOVE", d: { guildId: "10", userId: "2" } });
+    expect(state.members["10"]?.["2"]).toBeUndefined();
+    expect(state.voice["10"]?.["2"]).toBeUndefined(); // saiu da voz junto
+    state = dispatch(state, { t: "GUILD_DELETE", d: { id: "10" } });
+    expect(state.guilds["10"]).toBeUndefined();
+    expect(state.guildOrder).toEqual([]);
+    expect(state.channels["20"]).toBeUndefined();
+    expect(state.reads["20"]).toBeUndefined();
+  });
+
   it("evento desconhecido (servidor mais novo) não quebra o estado", () => {
     const state = ready();
     expect(chatReducer(state, { type: "dispatch", event: { t: "ALGO_NOVO", d: {} } as never, now: 0 })).toBe(state);
@@ -197,7 +264,7 @@ describe("chatReducer", () => {
     expect(state.typing["20"]).toBeUndefined();
     state = chatReducer(state, { type: "dispatch", event: { t: "PRESENCE_UPDATE", d: { userId: "2", online: true } }, now: 0 });
     expect(state.members["10"]?.["2"]?.online).toBe(true);
-    state = chatReducer(state, { type: "dispatch", event: { t: "CHANNEL_CREATE", d: { id: "22", guildId: "10", type: "text", name: "off", position: 3 } }, now: 0 });
+    state = chatReducer(state, { type: "dispatch", event: { t: "CHANNEL_CREATE", d: { id: "22", guildId: "10", type: "text", name: "off", position: 3, overwrites: [] } }, now: 0 });
     expect(state.guilds["10"]?.channelIds).toEqual(["20", "21", "30", "22"]);
   });
 

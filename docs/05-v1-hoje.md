@@ -99,6 +99,19 @@
   - Servidor: mudar o nome de exibição (ao vivo, `USER_UPDATE`) e trocar a senha.
 
 - **1.4.1** — mesma 1.4.0, recompilada: o instalador 1.4.0 foi acusado pelo Defender (falso positivo `Bearfoos.A!ml`). O `pnpm release` agora só publica instalador aprovado pelo Defender ([06](06-atualizacoes.md)).
+- **1.5.0** — **configurações do servidor, cargos e permissões** (fase 1 do [09](09-configuracoes-do-servidor.md)):
+  - Cargos com nome, cor, ordem e "mostrar separado na lista de membros", mais 14 permissões. O cargo base @todos vale para todo mundo, e os servidores antigos o ganharam na migração.
+  - Hierarquia: só se mexe em cargos e pessoas abaixo do seu cargo mais alto, e só se concede o que se tem.
+  - Moderação: expulsar, banir (com motivo e sem volta pelo convite) e desfazer banimento.
+  - Convites: lista e revogação. Canais: renomear e excluir. Servidor: renomear, excluir (só o dono) e sair.
+  - Registro de auditoria com quem fez o quê.
+  - Tudo é conferido no servidor. Na voz, a credencial do LiveKit só libera o microfone com "Falar" e a tela com "Transmitir"; quem perde "Conectar", é expulso ou banido sai da sala na hora.
+  - App: engrenagem no cabeçalho do servidor, lista de membros agrupada por cargo e botões que respeitam as permissões.
+- **1.6.0** — **permissões por canal e moderação** (fase 2 do [09](09-configuracoes-do-servidor.md)):
+  - Canal privado (com cadeado) e canal só de leitura; regras Negar/Herdar/Permitir por cargo ou pessoa em cada canal. Quem não vê um canal não recebe nada dele.
+  - Castigo: só ler até a hora marcada (sai da voz; não escapa saindo e voltando).
+  - Na voz: silenciar para todos, mover para outra sala e desconectar (menu "…" em quem está na sala).
+  - Criar canal já como privado.
 
 ## O que fica para depois (ordem sugerida)
 escolha de microfone/fone · DMs e amigos · anexos e prévia de links · cargos e permissões (pacote `permissions` do doc 03) · lista virtualizada para canais grandes · servidor hospedado (VPS) com HTTPS · depois, o restante do roadmap.

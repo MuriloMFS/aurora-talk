@@ -81,10 +81,10 @@ describe("canais de voz", () => {
 
     anaWs.send({ op: "voice_join", channelId: voice.id, muted: false, deafened: false });
     const joined = await betoWs.event("VOICE_STATE_UPDATE");
-    expect(joined.d).toEqual({ guildId: guild.id, userId: ana.user.id, channelId: voice.id, muted: false, deafened: false, streaming: false });
+    expect(joined.d).toEqual({ guildId: guild.id, userId: ana.user.id, channelId: voice.id, muted: false, deafened: false, streaming: false, serverMuted: false });
 
     const late = await identify(beto.token);
-    expect(late.ready.guilds[0]!.voiceStates).toEqual([{ userId: ana.user.id, channelId: voice.id, muted: false, deafened: false, streaming: false }]);
+    expect(late.ready.guilds[0]!.voiceStates).toEqual([{ userId: ana.user.id, channelId: voice.id, muted: false, deafened: false, streaming: false, serverMuted: false }]);
     late.client.close();
 
     anaWs.send({ op: "voice_state", muted: false, deafened: false, streaming: true });

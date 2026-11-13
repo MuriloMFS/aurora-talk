@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import { z } from "zod";
-import { AccessToken } from "livekit-server-sdk";
+import { AccessToken, RoomServiceClient, TrackSource } from "livekit-server-sdk";
 import {
   GATEWAY_PATH,
   LIMITS,
@@ -11,6 +11,29 @@ import {
   isValidEmoji,
   normalizeChannelName,
   normalizeVoiceChannelName,
+  ALL_PERMISSIONS,
+  CHANNEL_PERMISSIONS,
+  EVERYONE_ROLE_NAME,
+  PERMISSIONS,
+  PERMISSION_INFO,
+  ROLE_COLORS,
+  ROLE_NAME_MAX,
+  ROLES_PER_GUILD,
+  TIMEOUT_MAX_MINUTES,
+  canManageRole,
+  canModerate,
+  clampGrantedPermissions,
+  computeChannelPermissions,
+  computePermissions,
+  formatDuration,
+  hasPermission,
+  highestPosition,
+  outranks,
+  type Actor,
+  type ModerationPermission,
+  type Overwrite,
+  type PermissionName,
+  type Role,
   type AuthResponse,
   type Channel,
   type Guild,
@@ -29,7 +52,7 @@ import { registerSiteRoutes } from "./site.ts";
 import type { IceServerSource } from "./turn.ts";
 import { registerUpdateRoutes } from "./updates.ts";
 
-export const SERVER_VERSION = "1.4.1";
+export const SERVER_VERSION = "1.6.0";
 
 export class HttpError extends Error {
   readonly status: number;
@@ -71,6 +94,33 @@ const displayNameField = z
   .max(LIMITS.displayNameMax, `O nome de exibição pode ter no máximo ${LIMITS.displayNameMax} caracteres.`);
 const profileBody = z.object({ displayName: displayNameField });
 const passwordBody = z.object({ currentPassword: z.string().min(1, "Informe a senha atual."), newPassword: passwordField });
+const roleFields = {
+  name: z.string().trim().min(1, "Dê um nome ao cargo.").max(ROLE_NAME_MAX, `O nome do cargo pode ter no máximo ${ROLE_NAME_MAX} caracteres.`),
+  color: z.number().int().min(0).max(ROLE_COLORS - 1).nullable(),
+  permissions: z.number().int().min(0).max(ALL_PERMISSIONS),
+  hoist: z.boolean(),
+};
+const roleCreateBody = z.object(roleFields).partial();
+const roleUpdateBody = z.object(roleFields).partial();
+const roleMoveBody = z.object({ direction: z.enum(["up", "down"]) });
+const banBody = z.object({ reason: z.string().trim().max(LIMITS.banReasonMax, `O motivo pode ter no máximo ${LIMITS.banReasonMax} caracteres.`).optional() });
+const guildUpdateBody = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(LIMITS.guildNameMin, `O nome do servidor precisa ter pelo menos ${LIMITS.guildNameMin} caracteres.`)
+    .max(LIMITS.guildNameMax, `O nome do servidor pode ter no máximo ${LIMITS.guildNameMax} caracteres.`),
+});
+const channelUpdateBody = z.object({ name: z.string().max(LIMITS.channelNameMax * 2) });
+const overwriteBody = z.object({
+  allow: z.number().int().min(0).max(ALL_PERMISSIONS),
+  deny: z.number().int().min(0).max(ALL_PERMISSIONS),
+});
+const timeoutBody = z.object({
+  minutes: z.number().int().min(1, "Escolha por quanto tempo.").max(TIMEOUT_MAX_MINUTES, "O castigo pode durar no máximo 28 dias.").nullable(),
+});
+const voiceModerationBody = z.object({ muted: z.boolean().optional(), channelId: z.string().max(20).nullable().optional() });
+const auditQuery = z.object({ before: z.string().optional() });
 const loginBody = z.object({
   username: z.string().trim().toLowerCase().min(1, "Informe o usuário."),
   password: z.string().min(1, "Informe a senha."),
@@ -85,6 +135,8 @@ const guildBody = z.object({
 const channelBody = z.object({
   name: z.string().max(200, "Nome de canal longo demais."),
   type: z.enum(["text", "voice"]).optional(),
+  /** Só quem você liberar vê (você continua vendo). */
+  private: z.boolean().optional(),
 });
 const messageBody = z.object({ content: contentField, nonce: z.string().max(64).optional(), replyToId: z.string().max(20).optional() });
 const ackBody = z.object({ messageId: z.string().max(20) });
@@ -100,8 +152,11 @@ interface Deps {
   logger?: boolean;
   /** Pasta com as versões publicadas do app (latest.json + instaladores). Sem ela, não há atualizações. */
   releasesDir?: string;
-  /** Servidor de mídia LiveKit. `url` vazio = mesmo host pelo qual o cliente chegou, porta 7880. */
-  voice?: { apiKey: string; apiSecret: string; url?: string };
+  /**
+   * Servidor de mídia LiveKit. `url` vazio = mesmo host pelo qual o cliente chegou, porta 7880.
+   * `apiUrl` = onde ESTE servidor fala com o LiveKit para tirar alguém da sala (padrão: 127.0.0.1:7880).
+   */
+  voice?: { apiKey: string; apiSecret: string; url?: string; apiUrl?: string };
   /** Retransmissor TURN (credenciais temporárias por entrada na voz). Sem ele, só conexão direta à mídia. */
   turn?: IceServerSource;
   /** Pasta do site de download (apps/site/dist). Sem ela, "/" responde 404. */
@@ -114,6 +169,8 @@ interface Deps {
 }
 
 const VOICE_TOKEN_TTL = "6h";
+/** Quem foi movido e não trocou de sala (app antigo) sai da sala de mídia antiga depois disso. */
+const MOVE_GRACE_MS = 15_000;
 
 export async function buildApp({ store, gateway, logger = false, releasesDir, voice, turn, siteDir, trustCloudflare = false }: Deps): Promise<FastifyInstance> {
   // Nível "warn": logs de cada requisição (nível info) ficam de fora.
@@ -191,14 +248,15 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     if (!guild) throw new HttpError(404, "not_found", "Servidor não encontrado.");
     return guild;
   };
+  /** Canal que o usuário vê (canal privado de quem não tem acesso também dá 404: não revela que existe). */
   const memberChannel = (channelId: string, userId: Id): Channel => {
     const channel = isValidId(channelId) ? store.getChannel(channelId) : undefined;
-    if (!channel || !store.isMember(channel.guildId, userId)) throw new HttpError(404, "not_found", "Canal não encontrado.");
+    if (!channel || !hasPermission(store.channelPermissionsOf(channel, userId), "VIEW_CHANNEL")) throw new HttpError(404, "not_found", "Canal não encontrado.");
     return channel;
   };
-  /** Menções válidas: só membros do servidor, mais o autor da mensagem respondida (como no Discord). */
-  const mentionsFor = (guildId: Id, content: string, replyAuthorId: Id | null | undefined, authorId: Id): Id[] => {
-    const members = new Set(store.memberIds(guildId));
+  /** Menções válidas: só quem vê o canal, mais o autor da mensagem respondida (como no Discord). */
+  const mentionsFor = (channel: Channel, content: string, replyAuthorId: Id | null | undefined, authorId: Id): Id[] => {
+    const members = new Set(store.channelViewerIds(channel));
     const ids = extractMentionIds(content).filter((id) => members.has(id));
     if (replyAuthorId && replyAuthorId !== authorId && members.has(replyAuthorId) && !ids.includes(replyAuthorId)) ids.push(replyAuthorId);
     return ids.slice(0, LIMITS.mentionsPerMessage);
@@ -210,6 +268,121 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     if (!message || message.channelId !== channel.id) throw new HttpError(404, "not_found", "Mensagem não encontrada.");
     return { channel, message };
   };
+  /* ---------- permissões (conferidas aqui; o app só esconde o que não pode) ---------- */
+  const PERMISSION_LABEL = Object.fromEntries(PERMISSION_INFO.flatMap((g) => g.items.map((i) => [i.name, i.label]))) as Record<PermissionName, string>;
+  const TIMED_OUT = "Você está de castigo neste servidor. Até acabar, dá para ler, mas não escrever, reagir nem usar a voz.";
+  const requirePermission = (guildId: Id, userId: Id, name: PermissionName) => {
+    if (!hasPermission(store.permissionsOf(guildId, userId), name)) {
+      if (store.timeoutOf(guildId, userId) !== null) throw new HttpError(403, "timed_out", TIMED_OUT);
+      throw new HttpError(403, "missing_permission", `Você não tem a permissão "${PERMISSION_LABEL[name]}" neste servidor. Peça a quem administra.`);
+    }
+  };
+  const requireChannelPermission = (channel: Channel, userId: Id, name: PermissionName) => {
+    if (!hasPermission(store.channelPermissionsOf(channel, userId), name)) {
+      if (store.timeoutOf(channel.guildId, userId) !== null) throw new HttpError(403, "timed_out", TIMED_OUT);
+      throw new HttpError(403, "missing_permission", `Você não tem a permissão "${PERMISSION_LABEL[name]}" neste canal. Peça a quem administra.`);
+    }
+  };
+  const channelLabel = (channel: Pick<Channel, "type" | "name">) => (channel.type === "text" ? `#${channel.name}` : channel.name);
+  /** "libera Ver canais, Conectar · bloqueia Enviar mensagens" (para o registro de auditoria). */
+  const describeOverwrite = (allow: number, deny: number): string => {
+    const names = (bits: number) => (Object.keys(PERMISSIONS) as PermissionName[]).filter((n) => bits & PERMISSIONS[n]).map((n) => PERMISSION_LABEL[n]);
+    const parts = [allow && `libera ${names(allow).join(", ")}`, deny && `bloqueia ${names(deny).join(", ")}`].filter(Boolean);
+    return parts.length > 0 ? parts.join(" · ") : "volta a seguir o servidor";
+  };
+  const actorOf = (guildId: Id, userId: Id): Actor => ({ userId, roleIds: store.memberRoleIds(guildId, userId) });
+  const contextOf = (guildId: Id) => store.permissionContext(guildId)!;
+  /** Cargo do servidor (404 se for de outro). */
+  const guildRole = (guildId: Id, roleId: string): Role => {
+    const role = isValidId(roleId) ? store.getRole(roleId) : undefined;
+    if (!role || role.guildId !== guildId) throw new HttpError(404, "not_found", "Cargo não encontrado.");
+    return role;
+  };
+  const requireRoleControl = (guildId: Id, userId: Id, role: Role) => {
+    requirePermission(guildId, userId, "MANAGE_ROLES");
+    if (!canManageRole(contextOf(guildId), actorOf(guildId, userId), role)) {
+      throw new HttpError(403, "role_hierarchy", "Esse cargo está no mesmo nível ou acima do seu. Só dá para mexer em cargos abaixo do seu cargo mais alto.");
+    }
+  };
+  const broadcastRoles = (guildId: Id) => gateway.dispatchToGuild(guildId, { t: "GUILD_ROLES_UPDATE", d: { guildId, roles: store.rolesOf(guildId) } });
+
+  /* ---------- voz: tirar da sala do LiveKit e atualizar o que cada um pode publicar ---------- */
+  let roomService: RoomServiceClient | null = null;
+  const rooms = () => {
+    if (!voice) return null;
+    roomService ??= new RoomServiceClient(voice.apiUrl ?? "http://127.0.0.1:7880", voice.apiKey, voice.apiSecret);
+    return roomService;
+  };
+  const voiceRoom = (channelId: Id) => `aurora-voice-${channelId}`;
+  /** O que a credencial do LiveKit libera: microfone com "Falar" (e sem silêncio de moderador), tela com "Transmitir". */
+  const publishSources = (permissions: number, serverMuted = false): TrackSource[] => [
+    ...(hasPermission(permissions, "SPEAK") && !serverMuted ? [TrackSource.MICROPHONE] : []),
+    ...(hasPermission(permissions, "STREAM") ? [TrackSource.SCREEN_SHARE, TrackSource.SCREEN_SHARE_AUDIO] : []),
+  ];
+  /** Melhor esforço: se o LiveKit não responder, a pessoa cai sozinha quando a credencial expirar. */
+  const evictFromVoice = (guildId: Id, userId: Id) => {
+    const channelId = gateway.voiceChannelOf(userId);
+    gateway.leaveVoiceIn(guildId, userId);
+    if (channelId) rooms()?.removeParticipant(voiceRoom(channelId), userId).catch(() => undefined);
+  };
+  /** Depois de mudar cargos, sobrescritas, castigo ou silêncio: quem está na voz passa a poder (ou não) falar e transmitir na hora. */
+  const refreshVoiceGrants = (guildId: Id, onlyUserId?: Id) => {
+    for (const { userId, channelId } of gateway.voiceMembersOf(guildId)) {
+      if (onlyUserId !== undefined && userId !== onlyUserId) continue;
+      const channel = store.getChannel(channelId);
+      const permissions = channel ? store.channelPermissionsOf(channel, userId) : 0;
+      if (!hasPermission(permissions, "CONNECT")) {
+        evictFromVoice(guildId, userId);
+        continue;
+      }
+      const sources = publishSources(permissions, store.isServerMuted(guildId, userId));
+      rooms()
+        ?.updateParticipant(voiceRoom(channelId), userId, undefined, { canPublish: sources.length > 0, canSubscribe: true, canPublishData: false, canPublishSources: sources })
+        .catch(() => undefined);
+    }
+  };
+  /** Silêncio de moderador: além de tirar a permissão, desliga o microfone que já está no ar (melhor esforço). */
+  const silenceMicrophone = (channelId: Id, userId: Id) => {
+    const service = rooms();
+    if (!service) return;
+    service
+      .getParticipant(voiceRoom(channelId), userId)
+      .then((participant) =>
+        Promise.all(
+          participant.tracks
+            .filter((track) => track.source === TrackSource.MICROPHONE && !track.muted)
+            .map((track) => service.mutePublishedTrack(voiceRoom(channelId), userId, track.sid, true)),
+        ),
+      )
+      .catch(() => undefined);
+  };
+  /**
+   * Depois de mudar quem vê o quê (cargos, permissões ou sobrescritas): cada pessoa ganha ou perde os
+   * canais na hora (com quem está na voz deles), e a voz se ajusta.
+   */
+  const syncAccess = (guildId: Id, before: Map<Id, Set<Id>>) => {
+    const after = store.visibility(guildId);
+    const channels = new Map(store.channelsOf(guildId).map((c) => [c.id, c]));
+    const voiceStates = gateway.voiceStatesOf(guildId);
+    for (const [userId, visible] of after) {
+      const previous = before.get(userId) ?? new Set<Id>();
+      for (const channelId of visible) {
+        const channel = channels.get(channelId);
+        if (previous.has(channelId) || !channel) continue;
+        gateway.dispatchToUser(userId, { t: "CHANNEL_CREATE", d: channel });
+        for (const state of voiceStates) if (state.channelId === channelId) gateway.dispatchToUser(userId, { t: "VOICE_STATE_UPDATE", d: { guildId, ...state } });
+      }
+      for (const channelId of previous) if (!visible.has(channelId)) gateway.dispatchToUser(userId, { t: "CHANNEL_DELETE", d: { id: channelId, guildId } });
+    }
+    refreshVoiceGrants(guildId);
+  };
+  /** Tira a pessoa do servidor (expulsa, banida ou saiu) e avisa todo mundo. */
+  const dropMember = (guildId: Id, userId: Id) => {
+    evictFromVoice(guildId, userId);
+    gateway.dispatchToGuild(guildId, { t: "MEMBER_REMOVE", d: { guildId, userId } });
+    gateway.dispatchToUser(userId, { t: "GUILD_DELETE", d: { id: guildId } });
+  };
+
   const startSession = (user: User): AuthResponse => {
     const token = newSessionToken();
     store.createSession(hashToken(token), user.id);
@@ -274,7 +447,7 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     limit(actionLimiter, `action:${user.id}`);
     const { name } = guildBody.parse(request.body);
     const guild = store.createGuild(name, user.id, gateway);
-    gateway.dispatchToUser(user.id, { t: "GUILD_CREATE", d: guild });
+    gateway.dispatchToUser(user.id, { t: "GUILD_CREATE", d: guild }); // o dono vê tudo
     return reply.status(201).send(guild);
   });
 
@@ -282,7 +455,325 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     const { user } = authenticate(request);
     limit(actionLimiter, `action:${user.id}`);
     const guild = memberGuild(request.params.guildId, user.id);
+    requirePermission(guild.id, user.id, "CREATE_INVITE");
     return reply.status(201).send(store.createInvite(guild.id, user.id));
+  });
+
+  /* ---------- configurações do servidor ---------- */
+  type GuildParams = { Params: { guildId: string } };
+  /** Servidor do qual o usuário é membro: só o id, sem montar o objeto inteiro. */
+  const memberGuildId = (guildId: string, userId: Id): Id => {
+    if (!isValidId(guildId) || !store.isMember(guildId, userId)) throw new HttpError(404, "not_found", "Servidor não encontrado.");
+    return guildId;
+  };
+
+  app.patch<GuildParams>("/api/guilds/:guildId", async (request) => {
+    const { user } = authenticate(request);
+    limit(actionLimiter, `action:${user.id}`);
+    const guildId = memberGuildId(request.params.guildId, user.id);
+    requirePermission(guildId, user.id, "MANAGE_GUILD");
+    const { name } = guildUpdateBody.parse(request.body);
+    const before = store.guildName(guildId)!;
+    if (name !== before) {
+      store.renameGuild(guildId, name);
+      store.audit(guildId, user.id, "guild_update", name, `nome: ${before} → ${name}`);
+      gateway.dispatchToGuild(guildId, { t: "GUILD_UPDATE", d: { id: guildId, name } });
+    }
+    return { id: guildId, name };
+  });
+
+  app.delete<GuildParams>("/api/guilds/:guildId", async (request, reply) => {
+    const { user } = authenticate(request);
+    const guildId = memberGuildId(request.params.guildId, user.id);
+    if (store.ownerOf(guildId) !== user.id) throw new HttpError(403, "owner_only", "Só o dono pode excluir o servidor.");
+    for (const { userId, channelId } of gateway.voiceMembersOf(guildId)) rooms()?.removeParticipant(voiceRoom(channelId), userId).catch(() => undefined);
+    gateway.forgetGuild(guildId);
+    const members = store.deleteGuild(guildId);
+    gateway.dispatchToUsers(members, { t: "GUILD_DELETE", d: { id: guildId } });
+    return reply.status(204).send();
+  });
+
+  // Sair do servidor (o dono não sai: exclui ou, no futuro, transfere).
+  app.delete<GuildParams>("/api/guilds/:guildId/members/@me", async (request, reply) => {
+    const { user } = authenticate(request);
+    const guildId = memberGuildId(request.params.guildId, user.id);
+    if (store.ownerOf(guildId) === user.id) throw new HttpError(400, "owner_cannot_leave", "Você é o dono: para sair, exclua o servidor.");
+    store.removeMember(guildId, user.id);
+    dropMember(guildId, user.id);
+    return reply.status(204).send();
+  });
+
+  /* cargos */
+  app.post<GuildParams>("/api/guilds/:guildId/roles", async (request, reply) => {
+    const { user } = authenticate(request);
+    limit(actionLimiter, `action:${user.id}`);
+    const guildId = memberGuildId(request.params.guildId, user.id);
+    requirePermission(guildId, user.id, "MANAGE_ROLES");
+    if (store.rolesOf(guildId).length >= ROLES_PER_GUILD) throw new HttpError(400, "too_many_roles", `O servidor já tem ${ROLES_PER_GUILD} cargos. Exclua algum para criar outro.`);
+    const body = roleCreateBody.parse(request.body ?? {});
+    const permissions = clampGrantedPermissions(store.permissionsOf(guildId, user.id), 0, body.permissions ?? 0);
+    const role = store.createRole(guildId, { name: body.name ?? "novo cargo", color: body.color ?? null, permissions, hoist: body.hoist ?? false });
+    store.audit(guildId, user.id, "role_create", role.name);
+    broadcastRoles(guildId);
+    return reply.status(201).send(role);
+  });
+
+  app.patch<{ Params: { guildId: string; roleId: string } }>("/api/guilds/:guildId/roles/:roleId", async (request) => {
+    const { user } = authenticate(request);
+    limit(actionLimiter, `action:${user.id}`);
+    const guildId = memberGuildId(request.params.guildId, user.id);
+    const role = guildRole(guildId, request.params.roleId);
+    requireRoleControl(guildId, user.id, role);
+    const body = roleUpdateBody.parse(request.body ?? {});
+    const everyone = role.id === guildId;
+    const before = store.visibility(guildId);
+    const next = {
+      name: everyone ? EVERYONE_ROLE_NAME : (body.name ?? role.name),
+      color: everyone ? null : body.color === undefined ? role.color : body.color,
+      hoist: everyone ? false : (body.hoist ?? role.hoist),
+      permissions: body.permissions === undefined ? role.permissions : clampGrantedPermissions(store.permissionsOf(guildId, user.id), role.permissions, body.permissions),
+    };
+    store.updateRole(role.id, next);
+    const changes = [
+      next.name !== role.name && `nome: ${role.name} → ${next.name}`,
+      next.permissions !== role.permissions && "permissões",
+      next.color !== role.color && "cor",
+      next.hoist !== role.hoist && (next.hoist ? "mostrar separado" : "não mostrar separado"),
+    ].filter(Boolean);
+    if (changes.length > 0) {
+      store.audit(guildId, user.id, "role_update", next.name, changes.join(", "));
+      broadcastRoles(guildId);
+      if (next.permissions !== role.permissions) syncAccess(guildId, before);
+    }
+    return store.getRole(role.id);
+  });
+
+  // Subir/descer um cargo uma posição (troca com o vizinho; os dois precisam estar abaixo do seu).
+  app.post<{ Params: { guildId: string; roleId: string } }>("/api/guilds/:guildId/roles/:roleId/move", async (request) => {
+    const { user } = authenticate(request);
+    limit(actionLimiter, `action:${user.id}`);
+    const guildId = memberGuildId(request.params.guildId, user.id);
+    const role = guildRole(guildId, request.params.roleId);
+    if (role.id === guildId) throw new HttpError(400, "invalid_request", "O @todos fica sempre por último.");
+    requireRoleControl(guildId, user.id, role);
+    const { direction } = roleMoveBody.parse(request.body);
+    const neighbor = store.rolesOf(guildId).find((r) => r.position === role.position + (direction === "up" ? 1 : -1));
+    if (!neighbor || neighbor.id === guildId) return store.rolesOf(guildId); // já está no limite
+    requireRoleControl(guildId, user.id, neighbor);
+    store.swapRolePositions(role, neighbor);
+    broadcastRoles(guildId);
+    return store.rolesOf(guildId);
+  });
+
+  app.delete<{ Params: { guildId: string; roleId: string } }>("/api/guilds/:guildId/roles/:roleId", async (request, reply) => {
+    const { user } = authenticate(request);
+    limit(actionLimiter, `action:${user.id}`);
+    const guildId = memberGuildId(request.params.guildId, user.id);
+    const role = guildRole(guildId, request.params.roleId);
+    if (role.id === guildId) throw new HttpError(400, "invalid_request", "O @todos não pode ser excluído.");
+    requireRoleControl(guildId, user.id, role);
+    const before = store.visibility(guildId);
+    const touched = store.channelsOf(guildId).filter((c) => c.overwrites.some((o) => o.targetType === "role" && o.targetId === role.id));
+    store.deleteRole(role); // as sobrescritas do cargo vão junto
+    store.audit(guildId, user.id, "role_delete", role.name);
+    broadcastRoles(guildId);
+    for (const channel of touched) {
+      const updated = store.getChannel(channel.id);
+      if (updated) gateway.dispatchToChannel(updated, { t: "CHANNEL_UPDATE", d: updated });
+    }
+    syncAccess(guildId, before);
+    return reply.status(204).send();
+  });
+
+  /* membros: dar/tirar cargo, expulsar, banir */
+  type MemberRoleParams = { Params: { guildId: string; userId: string; roleId: string } };
+  const setMemberRole = (request: FastifyRequest<MemberRoleParams>, add: boolean) => {
+    const { user } = authenticate(request);
+    limit(actionLimiter, `action:${user.id}`);
+    const guildId = memberGuildId(request.params.guildId, user.id);
+    const target = isValidId(request.params.userId) ? store.getMember(guildId, request.params.userId) : undefined;
+    if (!target) throw new HttpError(404, "not_found", "Essa pessoa não está no servidor.");
+    const role = guildRole(guildId, request.params.roleId);
+    if (role.id === guildId) throw new HttpError(400, "invalid_request", "Todo mundo já tem o @todos.");
+    requireRoleControl(guildId, user.id, role);
+    const had = target.roles.includes(role.id);
+    const before = store.visibility(guildId);
+    const roles = store.setMemberRole(guildId, target.user.id, role.id, add);
+    if (had !== add) {
+      store.audit(guildId, user.id, add ? "member_role_add" : "member_role_remove", target.user.displayName, role.name);
+      gateway.dispatchToGuild(guildId, { t: "MEMBER_UPDATE", d: { guildId, userId: target.user.id, roles, timeoutUntil: store.timeoutOf(guildId, target.user.id) } });
+      syncAccess(guildId, before);
+    }
+    return { roles };
+  };
+  app.put<MemberRoleParams>("/api/guilds/:guildId/members/:userId/roles/:roleId", async (request) => setMemberRole(request, true));
+  app.delete<MemberRoleParams>("/api/guilds/:guildId/members/:userId/roles/:roleId", async (request) => setMemberRole(request, false));
+
+  type MemberParams = { Params: { guildId: string; userId: string } };
+  const moderationTarget = (request: FastifyRequest<MemberParams>, userId: Id, permission: ModerationPermission) => {
+    const guildId = memberGuildId(request.params.guildId, userId);
+    requirePermission(guildId, userId, permission);
+    const target = isValidId(request.params.userId) ? store.getMember(guildId, request.params.userId) : undefined;
+    return { guildId, target };
+  };
+  const hierarchyError = (self: boolean) =>
+    new HttpError(403, "member_hierarchy", self ? "Você não pode fazer isso consigo mesmo." : "Essa pessoa está no mesmo nível ou acima de você. Só dá para moderar quem está abaixo do seu cargo mais alto.");
+  const requireOutranks = (guildId: Id, userId: Id, target: { user: User; roles: Id[] }, permission: ModerationPermission) => {
+    if (!canModerate(contextOf(guildId), actorOf(guildId, userId), { userId: target.user.id, roleIds: target.roles }, permission)) {
+      throw hierarchyError(target.user.id === userId);
+    }
+  };
+
+  app.delete<MemberParams>("/api/guilds/:guildId/members/:userId", async (request, reply) => {
+    const { user } = authenticate(request);
+    limit(actionLimiter, `action:${user.id}`);
+    const { guildId, target } = moderationTarget(request, user.id, "KICK_MEMBERS");
+    if (!target) throw new HttpError(404, "not_found", "Essa pessoa não está no servidor.");
+    requireOutranks(guildId, user.id, target, "KICK_MEMBERS");
+    store.removeMember(guildId, target.user.id);
+    store.audit(guildId, user.id, "member_kick", target.user.displayName);
+    dropMember(guildId, target.user.id);
+    return reply.status(204).send();
+  });
+
+  app.put<MemberParams>("/api/guilds/:guildId/bans/:userId", async (request, reply) => {
+    const { user } = authenticate(request);
+    limit(actionLimiter, `action:${user.id}`);
+    const { guildId, target } = moderationTarget(request, user.id, "BAN_MEMBERS");
+    const { reason } = banBody.parse(request.body ?? {});
+    // dá para banir quem já saiu (para não voltar); quem ainda está precisa estar abaixo de você
+    const banned = target?.user ?? (isValidId(request.params.userId) ? store.getUser(request.params.userId) : undefined);
+    if (!banned) throw new HttpError(404, "not_found", "Conta não encontrada.");
+    if (target) requireOutranks(guildId, user.id, target, "BAN_MEMBERS");
+    else if (banned.id === user.id || banned.id === store.ownerOf(guildId)) throw new HttpError(403, "member_hierarchy", "Essa conta não pode ser banida.");
+    store.ban(guildId, banned.id, reason || null, user.id);
+    store.audit(guildId, user.id, "member_ban", banned.displayName, reason || null);
+    if (target) dropMember(guildId, banned.id);
+    return reply.status(204).send();
+  });
+
+  app.get<GuildParams>("/api/guilds/:guildId/bans", async (request) => {
+    const { user } = authenticate(request);
+    const guildId = memberGuildId(request.params.guildId, user.id);
+    requirePermission(guildId, user.id, "BAN_MEMBERS");
+    return store.bansOf(guildId);
+  });
+
+  app.delete<MemberParams>("/api/guilds/:guildId/bans/:userId", async (request, reply) => {
+    const { user } = authenticate(request);
+    limit(actionLimiter, `action:${user.id}`);
+    const guildId = memberGuildId(request.params.guildId, user.id);
+    requirePermission(guildId, user.id, "BAN_MEMBERS");
+    const banned = isValidId(request.params.userId) ? store.getUser(request.params.userId) : undefined;
+    if (!banned || !store.unban(guildId, banned.id)) throw new HttpError(404, "not_found", "Essa conta não está banida.");
+    store.audit(guildId, user.id, "member_unban", banned.displayName);
+    return reply.status(204).send();
+  });
+
+  /* castigo: só ver (sem escrever, reagir nem usar a voz) até a hora marcada */
+  app.put<MemberParams>("/api/guilds/:guildId/members/:userId/timeout", async (request) => {
+    const { user } = authenticate(request);
+    limit(actionLimiter, `action:${user.id}`);
+    const { guildId, target } = moderationTarget(request, user.id, "MODERATE_MEMBERS");
+    if (!target) throw new HttpError(404, "not_found", "Essa pessoa não está no servidor.");
+    requireOutranks(guildId, user.id, target, "MODERATE_MEMBERS");
+    const { minutes } = timeoutBody.parse(request.body ?? {});
+    if (minutes !== null && computePermissions(contextOf(guildId), target.user.id, target.roles) & PERMISSIONS.ADMINISTRATOR) {
+      throw new HttpError(400, "cannot_timeout_admin", "Quem tem Administrador não fica de castigo. Tire o cargo com Administrador antes.");
+    }
+    const had = store.timeoutOf(guildId, target.user.id);
+    const until = minutes === null ? null : Date.now() + minutes * 60_000;
+    store.setTimeoutUntil(guildId, target.user.id, until);
+    if (until !== null || had !== null) {
+      store.audit(guildId, user.id, until === null ? "member_timeout_remove" : "member_timeout", target.user.displayName, minutes === null ? null : formatDuration(minutes));
+      gateway.dispatchToGuild(guildId, { t: "MEMBER_UPDATE", d: { guildId, userId: target.user.id, roles: target.roles, timeoutUntil: until } });
+      if (until !== null) refreshVoiceGrants(guildId, target.user.id); // de castigo, sai da voz
+    }
+    return { timeoutUntil: until };
+  });
+
+  /* voz: silenciar, mover para outra sala ou desconectar */
+  app.patch<MemberParams>("/api/guilds/:guildId/members/:userId/voice", async (request, reply) => {
+    const { user } = authenticate(request);
+    limit(actionLimiter, `action:${user.id}`);
+    const guildId = memberGuildId(request.params.guildId, user.id);
+    const target = isValidId(request.params.userId) ? store.getMember(guildId, request.params.userId) : undefined;
+    if (!target) throw new HttpError(404, "not_found", "Essa pessoa não está no servidor.");
+    const body = voiceModerationBody.parse(request.body ?? {});
+    if (body.muted === undefined && body.channelId === undefined) throw new HttpError(400, "invalid_request", "Escolha o que fazer: silenciar, mover ou desconectar.");
+    if (!outranks(contextOf(guildId), actorOf(guildId, user.id), { userId: target.user.id, roleIds: target.roles })) throw hierarchyError(target.user.id === user.id);
+    const currentId = gateway.voiceChannelOf(target.user.id);
+    const current = currentId ? store.getChannel(currentId) : undefined;
+    const here = current?.guildId === guildId ? current : undefined;
+
+    if (body.muted !== undefined) {
+      if (here) requireChannelPermission(here, user.id, "MUTE_MEMBERS");
+      else requirePermission(guildId, user.id, "MUTE_MEMBERS");
+      if (store.isServerMuted(guildId, target.user.id) !== body.muted) {
+        store.setServerMuted(guildId, target.user.id, body.muted);
+        gateway.setServerMuted(guildId, target.user.id, body.muted);
+        if (here) {
+          refreshVoiceGrants(guildId, target.user.id);
+          if (body.muted) silenceMicrophone(here.id, target.user.id);
+        }
+        store.audit(guildId, user.id, body.muted ? "voice_mute" : "voice_unmute", target.user.displayName);
+      }
+    }
+
+    if (body.channelId !== undefined) {
+      if (!here) throw new HttpError(400, "not_in_voice", "Essa pessoa não está na voz deste servidor.");
+      requireChannelPermission(here, user.id, "MOVE_MEMBERS");
+      if (body.channelId === null) {
+        gateway.dispatchToUser(target.user.id, { t: "VOICE_MOVE", d: { guildId, channelId: null } });
+        evictFromVoice(guildId, target.user.id);
+        store.audit(guildId, user.id, "voice_disconnect", target.user.displayName, here.name);
+      } else {
+        const to = isValidId(body.channelId) ? store.getChannel(body.channelId) : undefined;
+        if (!to || to.guildId !== guildId || to.type !== "voice" || !hasPermission(store.channelPermissionsOf(to, user.id), "VIEW_CHANNEL")) {
+          throw new HttpError(404, "not_found", "Sala de voz não encontrada.");
+        }
+        requireChannelPermission(to, user.id, "MOVE_MEMBERS");
+        if (!hasPermission(store.channelPermissionsOf(to, target.user.id), "CONNECT")) {
+          throw new HttpError(400, "cannot_connect", `${target.user.displayName} não pode entrar em ${to.name}. Libere "Conectar" nessa sala para a pessoa antes de mover.`);
+        }
+        if (gateway.moveVoice(target.user.id, to) !== null) {
+          const from = here.id;
+          // app que não trocar de sala sozinho (versão antiga) sai da sala de mídia antiga
+          setTimeout(() => {
+            if (gateway.voiceChannelOf(target.user.id) !== from) rooms()?.removeParticipant(voiceRoom(from), target.user.id).catch(() => undefined);
+          }, MOVE_GRACE_MS).unref();
+          store.audit(guildId, user.id, "voice_move", target.user.displayName, `${here.name} → ${to.name}`);
+        }
+      }
+    }
+    return reply.status(204).send();
+  });
+
+  /* convites e registro de auditoria */
+  app.get<GuildParams>("/api/guilds/:guildId/invites", async (request) => {
+    const { user } = authenticate(request);
+    const guildId = memberGuildId(request.params.guildId, user.id);
+    requirePermission(guildId, user.id, "MANAGE_GUILD");
+    return store.invitesOf(guildId);
+  });
+
+  app.delete<{ Params: { code: string } }>("/api/invites/:code", async (request, reply) => {
+    const { user } = authenticate(request);
+    limit(actionLimiter, `action:${user.id}`);
+    const invite = /^[A-Za-z0-9]{4,32}$/.test(request.params.code) ? store.findInvite(request.params.code) : undefined;
+    if (!invite || !store.isMember(invite.guildId, user.id)) throw new HttpError(404, "invite_not_found", "Convite não encontrado.");
+    requirePermission(invite.guildId, user.id, "MANAGE_GUILD");
+    store.deleteInvite(invite.code);
+    store.audit(invite.guildId, user.id, "invite_delete", invite.code);
+    return reply.status(204).send();
+  });
+
+  app.get<GuildParams>("/api/guilds/:guildId/audit-log", async (request) => {
+    const { user } = authenticate(request);
+    const guildId = memberGuildId(request.params.guildId, user.id);
+    requirePermission(guildId, user.id, "VIEW_AUDIT_LOG");
+    const { before } = auditQuery.parse(request.query);
+    return store.auditLog(guildId, before && isValidId(before) ? before : null, LIMITS.auditPageSize);
   });
 
   app.post<{ Params: { code: string } }>("/api/invites/:code", async (request) => {
@@ -290,27 +781,128 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     limit(actionLimiter, `action:${user.id}`);
     const invite = /^[A-Za-z0-9]{4,32}$/.test(request.params.code) ? store.findInvite(request.params.code) : undefined;
     if (!invite) throw new HttpError(404, "invite_not_found", "Convite inválido ou expirado. Confira o código.");
+    if (store.isBanned(invite.guildId, user.id)) throw new HttpError(403, "banned", "Você foi banido deste servidor e não pode entrar de novo.");
     if (!store.isMember(invite.guildId, user.id)) {
       const member = store.addMember(invite.guildId, user, gateway);
       store.countInviteUse(invite.code);
       gateway.dispatchToGuild(invite.guildId, { t: "MEMBER_ADD", d: { guildId: invite.guildId, member } }, user.id);
-      gateway.dispatchToUser(user.id, { t: "GUILD_CREATE", d: store.getGuild(invite.guildId, gateway)! });
+      gateway.dispatchToUser(user.id, { t: "GUILD_CREATE", d: store.getGuild(invite.guildId, gateway, user.id)! });
     }
-    return store.getGuild(invite.guildId, gateway);
+    return store.getGuild(invite.guildId, gateway, user.id);
   });
 
   app.post<{ Params: { guildId: string } }>("/api/guilds/:guildId/channels", async (request, reply) => {
     const { user } = authenticate(request);
     limit(actionLimiter, `action:${user.id}`);
     const guild = memberGuild(request.params.guildId, user.id);
-    if (guild.ownerId !== user.id) throw new HttpError(403, "forbidden", "Só o dono do servidor pode criar canais.");
+    requirePermission(guild.id, user.id, "MANAGE_CHANNELS");
     const body = channelBody.parse(request.body);
     const type = body.type ?? "text";
     const name = type === "voice" ? normalizeVoiceChannelName(body.name) : normalizeChannelName(body.name);
     if (!name) throw new HttpError(400, "invalid_request", "Escolha um nome de canal com letras ou números.");
-    const channel = store.createChannel(guild.id, name, type);
-    gateway.dispatchToGuild(guild.id, { t: "CHANNEL_CREATE", d: channel });
+    const overwrites: Overwrite[] = [];
+    if (body.private) {
+      overwrites.push({ targetType: "role", targetId: guild.id, allow: 0, deny: PERMISSIONS.VIEW_CHANNEL });
+      // quem cria continua vendo (dono e Administrador já veem tudo)
+      if (!(store.permissionsOf(guild.id, user.id) & PERMISSIONS.ADMINISTRATOR)) overwrites.push({ targetType: "member", targetId: user.id, allow: PERMISSIONS.VIEW_CHANNEL, deny: 0 });
+    }
+    const channel = store.createChannel(guild.id, name, type, overwrites);
+    store.audit(guild.id, user.id, "channel_create", channelLabel(channel), body.private ? "privado" : null);
+    gateway.dispatchToChannel(channel, { t: "CHANNEL_CREATE", d: channel });
     return reply.status(201).send(channel);
+  });
+
+  app.patch<{ Params: { channelId: string } }>("/api/channels/:channelId", async (request) => {
+    const { user } = authenticate(request);
+    limit(actionLimiter, `action:${user.id}`);
+    const channel = memberChannel(request.params.channelId, user.id);
+    requirePermission(channel.guildId, user.id, "MANAGE_CHANNELS");
+    const body = channelUpdateBody.parse(request.body);
+    const name = channel.type === "voice" ? normalizeVoiceChannelName(body.name) : normalizeChannelName(body.name);
+    if (!name) throw new HttpError(400, "invalid_request", "Escolha um nome de canal com letras ou números.");
+    if (name !== channel.name) {
+      store.renameChannel(channel.id, name);
+      store.audit(channel.guildId, user.id, "channel_update", channelLabel({ ...channel, name }), `nome: ${channelLabel(channel)} → ${channelLabel({ ...channel, name })}`);
+      gateway.dispatchToChannel(channel, { t: "CHANNEL_UPDATE", d: { ...channel, name } });
+    }
+    return { ...channel, name };
+  });
+
+  /* permissões do canal (sobrescritas para um cargo ou uma pessoa) */
+  type OverwriteParams = { Params: { channelId: string; targetType: string; targetId: string } };
+  const applyOverwrite = (request: FastifyRequest<OverwriteParams>, userId: Id, requested: { allow: number; deny: number }): Channel => {
+    const channel = memberChannel(request.params.channelId, userId);
+    requirePermission(channel.guildId, userId, "MANAGE_CHANNELS");
+    const { targetType, targetId } = request.params;
+    if ((targetType !== "role" && targetType !== "member") || !isValidId(targetId)) throw new HttpError(404, "not_found", "Cargo ou pessoa não encontrado.");
+    const guildId = channel.guildId;
+    const ctx = contextOf(guildId);
+    const actor = actorOf(guildId, userId);
+    let targetName: string;
+    if (targetType === "role") {
+      const role = guildRole(guildId, targetId);
+      // @todos: quem gerencia canais pode; outro cargo: só os abaixo do seu
+      if (role.id !== guildId && userId !== ctx.ownerId && role.position >= highestPosition(ctx, userId, actor.roleIds)) {
+        throw new HttpError(403, "role_hierarchy", "Esse cargo está no mesmo nível ou acima do seu. Só dá para mudar as permissões de cargos abaixo do seu cargo mais alto.");
+      }
+      targetName = role.id === guildId ? EVERYONE_ROLE_NAME : role.name;
+    } else {
+      const member = store.getMember(guildId, targetId);
+      if (!member) throw new HttpError(404, "not_found", "Essa pessoa não está no servidor.");
+      if (member.user.id !== userId && !outranks(ctx, actor, { userId: member.user.id, roleIds: member.roles })) throw hierarchyError(false);
+      targetName = member.user.displayName;
+    }
+    // só se libera ou bloqueia o que você mesmo tem neste canal; o resto fica como estava
+    const mine = store.channelPermissionsOf(channel, userId);
+    const previous = channel.overwrites.find((o) => o.targetType === targetType && o.targetId === targetId) ?? { allow: 0, deny: 0 };
+    const allow = clampGrantedPermissions(mine, previous.allow, requested.allow & CHANNEL_PERMISSIONS) & CHANNEL_PERMISSIONS;
+    const deny = clampGrantedPermissions(mine, previous.deny, requested.deny & CHANNEL_PERMISSIONS) & CHANNEL_PERMISSIONS & ~allow;
+    if (allow === previous.allow && deny === previous.deny) return channel;
+    const next: Overwrite[] = [
+      ...channel.overwrites.filter((o) => !(o.targetType === targetType && o.targetId === targetId)),
+      ...(allow || deny ? [{ targetType, targetId, allow, deny } as Overwrite] : []),
+    ];
+    if (!(computeChannelPermissions(ctx, userId, actor.roleIds, next) & PERMISSIONS.VIEW_CHANNEL)) {
+      throw new HttpError(400, "lock_out", "Assim você perderia o acesso a este canal. Libere antes um cargo seu (ou você mesmo) e depois esconda o canal.");
+    }
+    const before = store.visibility(guildId);
+    store.setOverwrite(channel.id, { targetType, targetId, allow, deny });
+    const updated = store.getChannel(channel.id)!;
+    store.audit(guildId, userId, "channel_permissions", channelLabel(channel), `${targetName}: ${describeOverwrite(allow, deny)}`);
+    syncAccess(guildId, before);
+    // quem já via recebe as regras novas (quem passou a ver já recebeu o canal inteiro)
+    const kept = store.channelViewerIds(updated).filter((id) => before.get(id)?.has(channel.id));
+    gateway.dispatchToUsers(kept, { t: "CHANNEL_UPDATE", d: updated });
+    return updated;
+  };
+  app.put<OverwriteParams>("/api/channels/:channelId/overwrites/:targetType/:targetId", async (request) => {
+    const { user } = authenticate(request);
+    limit(actionLimiter, `action:${user.id}`);
+    return applyOverwrite(request, user.id, overwriteBody.parse(request.body));
+  });
+  app.delete<OverwriteParams>("/api/channels/:channelId/overwrites/:targetType/:targetId", async (request) => {
+    const { user } = authenticate(request);
+    limit(actionLimiter, `action:${user.id}`);
+    return applyOverwrite(request, user.id, { allow: 0, deny: 0 });
+  });
+
+  app.delete<{ Params: { channelId: string } }>("/api/channels/:channelId", async (request, reply) => {
+    const { user } = authenticate(request);
+    limit(actionLimiter, `action:${user.id}`);
+    const channel = memberChannel(request.params.channelId, user.id);
+    requirePermission(channel.guildId, user.id, "MANAGE_CHANNELS");
+    if (channel.type === "text" && store.countChannels(channel.guildId, "text") <= 1) {
+      throw new HttpError(400, "last_text_channel", "O servidor precisa de pelo menos um canal de texto. Crie outro antes de excluir este.");
+    }
+    if (channel.type === "voice") {
+      for (const { userId, channelId } of gateway.voiceMembersOf(channel.guildId)) if (channelId === channel.id) rooms()?.removeParticipant(voiceRoom(channelId), userId).catch(() => undefined);
+      gateway.leaveVoiceChannel(channel.id);
+    }
+    const viewers = store.channelViewerIds(channel);
+    store.deleteChannel(channel.id);
+    store.audit(channel.guildId, user.id, "channel_delete", channelLabel(channel));
+    gateway.dispatchToUsers(viewers, { t: "CHANNEL_DELETE", d: { id: channel.id, guildId: channel.guildId } });
+    return reply.status(204).send();
   });
 
   // Credencial para a sala de mídia do canal de voz (o áudio vai direto ao LiveKit, não passa por aqui).
@@ -319,9 +911,11 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     const channel = memberChannel(request.params.channelId, user.id);
     if (channel.type !== "voice") throw new HttpError(400, "invalid_request", "Este não é um canal de voz.");
     if (!voice) throw new HttpError(503, "voice_unavailable", "A voz não está configurada neste servidor.");
-    const room = `aurora-voice-${channel.id}`;
+    requireChannelPermission(channel, user.id, "CONNECT");
+    const room = voiceRoom(channel.id);
     const token = new AccessToken(voice.apiKey, voice.apiSecret, { identity: user.id, name: user.displayName, ttl: VOICE_TOKEN_TTL });
-    token.addGrant({ room, roomJoin: true, canPublish: true, canSubscribe: true, canPublishData: false });
+    const sources = publishSources(store.channelPermissionsOf(channel, user.id), store.isServerMuted(channel.guildId, user.id));
+    token.addGrant({ room, roomJoin: true, canPublish: sources.length > 0, canPublishSources: sources, canSubscribe: true, canPublishData: false });
     const url = voice.url || `${request.protocol === "https" ? "wss" : "ws"}://${request.hostname}:7880`;
     // Sem o retransmissor, a voz ainda funciona para quem alcança o LiveKit direto (rede local).
     let iceServers: IceServer[] | undefined;
@@ -348,6 +942,7 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     const { user } = authenticate(request);
     const channel = memberChannel(request.params.channelId, user.id);
     if (channel.type !== "text") throw new HttpError(400, "invalid_request", "Canais de voz não têm mensagens.");
+    requireChannelPermission(channel, user.id, "SEND_MESSAGES");
     limit(messageLimiter, `msg:${user.id}`);
     const body = messageBody.parse(request.body);
     let replyAuthorId: Id | null = null;
@@ -356,11 +951,11 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
       if (!original || original.channelId !== channel.id) throw new HttpError(400, "reply_not_found", "A mensagem que você quer responder foi apagada.");
       replyAuthorId = original.author.id;
     }
-    const mentions = mentionsFor(channel.guildId, body.content, replyAuthorId, user.id);
+    const mentions = mentionsFor(channel, body.content, replyAuthorId, user.id);
     const created = store.createMessage(channel.id, user, body.content, body.replyToId ?? null, mentions);
     store.ack(user.id, channel.id, created.id); // o que eu escrevi já está lido
     const message = { ...created, ...(body.nonce ? { nonce: body.nonce } : {}) };
-    gateway.dispatchToGuild(channel.guildId, { t: "MESSAGE_CREATE", d: message });
+    gateway.dispatchToChannel(channel, { t: "MESSAGE_CREATE", d: message });
     return reply.status(201).send(message);
   });
 
@@ -371,8 +966,8 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     const channel = memberChannel(message.channelId, user.id);
     if (message.author.id !== user.id) throw new HttpError(403, "forbidden", "Você só pode editar as suas mensagens.");
     const { content } = editBody.parse(request.body);
-    const updated = store.updateMessage(message.id, content, mentionsFor(channel.guildId, content, message.replyTo?.author?.id, user.id))!;
-    gateway.dispatchToGuild(channel.guildId, { t: "MESSAGE_UPDATE", d: updated });
+    const updated = store.updateMessage(message.id, content, mentionsFor(channel, content, message.replyTo?.author?.id, user.id))!;
+    gateway.dispatchToChannel(channel, { t: "MESSAGE_UPDATE", d: updated });
     return updated;
   });
 
@@ -381,12 +976,11 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     const message = isValidId(request.params.messageId) ? store.getMessage(request.params.messageId) : undefined;
     if (!message) throw new HttpError(404, "not_found", "Mensagem não encontrada.");
     const channel = memberChannel(message.channelId, user.id);
-    const guild = memberGuild(channel.guildId, user.id);
-    if (message.author.id !== user.id && guild.ownerId !== user.id) {
+    if (message.author.id !== user.id && !hasPermission(store.channelPermissionsOf(channel, user.id), "MANAGE_MESSAGES")) {
       throw new HttpError(403, "forbidden", "Você só pode apagar as suas mensagens.");
     }
     store.deleteMessage(message.id);
-    gateway.dispatchToGuild(channel.guildId, { t: "MESSAGE_DELETE", d: { id: message.id, channelId: channel.id } });
+    gateway.dispatchToChannel(channel, { t: "MESSAGE_DELETE", d: { id: message.id, channelId: channel.id } });
     return reply.status(204).send();
   });
 
@@ -403,11 +997,12 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     const { user } = authenticate(request);
     limit(reactionLimiter, `react:${user.id}`);
     const { channel, message, emoji } = reactionTarget(request, user.id);
+    requireChannelPermission(channel, user.id, "ADD_REACTIONS");
     if (!store.hasReactionEmoji(message.id, emoji) && store.reactionKinds(message.id) >= LIMITS.reactionsPerMessage) {
       throw new HttpError(400, "too_many_reactions", "Esta mensagem já tem reações demais. Use um dos emojis que já estão nela.");
     }
     if (store.addReaction(message.id, user.id, emoji)) {
-      gateway.dispatchToGuild(channel.guildId, { t: "MESSAGE_REACTION_ADD", d: { channelId: channel.id, messageId: message.id, userId: user.id, emoji } });
+      gateway.dispatchToChannel(channel, { t: "MESSAGE_REACTION_ADD", d: { channelId: channel.id, messageId: message.id, userId: user.id, emoji } });
     }
     return reply.status(204).send();
   });
@@ -417,7 +1012,7 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     limit(reactionLimiter, `react:${user.id}`);
     const { channel, message, emoji } = reactionTarget(request, user.id);
     if (store.removeReaction(message.id, user.id, emoji)) {
-      gateway.dispatchToGuild(channel.guildId, { t: "MESSAGE_REACTION_REMOVE", d: { channelId: channel.id, messageId: message.id, userId: user.id, emoji } });
+      gateway.dispatchToChannel(channel, { t: "MESSAGE_REACTION_REMOVE", d: { channelId: channel.id, messageId: message.id, userId: user.id, emoji } });
     }
     return reply.status(204).send();
   });

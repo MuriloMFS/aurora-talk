@@ -5,7 +5,7 @@ import { decodeMentions, encodeMentions, filterMembers, mentionQueryAt } from ".
 const ana: User = { id: "1", username: "ana", displayName: "Ána Lima" };
 const bruno: User = { id: "2", username: "bruno.s", displayName: "Bruno" };
 const beto: User = { id: "3", username: "beto", displayName: "Roberto Alves" };
-const member = (user: User, online = true): Member => ({ user, joinedAt: 0, online });
+const member = (user: User, online = true): Member => ({ user, joinedAt: 0, online, roles: [] });
 
 describe("mentionQueryAt", () => {
   it("detecta o @ no começo ou depois de espaço", () => {
