@@ -86,6 +86,12 @@
     - instância única, em que abrir de novo ou clicar na notificação traz a janela aberta.
     - Plugins oficiais `notification`, `opener` e `single-instance`, com permissões mínimas em `capabilities/default.json`.
   - **Compatibilidade:** o gateway agora tem versão de protocolo (`identify.v = 2`). Apps 1.2.x não recebem os eventos novos, que quebrariam o reducer antigo, e o reducer novo ignora eventos desconhecidos.
+- **1.3.1** — publicação: site de download e servidor oficial no ar pelo Cloudflare Tunnel (`docs/07-publicacao.md`); o app já vem apontando para ele.
+- **1.3.2** — **voz e tela pela internet sem abrir portas**:
+  - O servidor gera credenciais temporárias (24 h) do retransmissor TURN da Cloudflare a cada entrada na voz (`apps/server/src/turn.ts`) e as manda junto com o token. A chave fica só no servidor (`deploy/linux/configurar-turn.sh`).
+  - O app passa os servidores ao LiveKit (`packages/platform/src/ice.ts`). O WebRTC escolhe sozinho: direto na rede de casa, pelo retransmissor de fora.
+  - Se a Cloudflare falhar, a voz segue só com conexão direta. `GET /api/health` mostra `voiceRelay`.
+  - Medido só pelo retransmissor: tela 1080p e voz sem perda, ida e volta de 7 a 10 ms (`docs/spikes/medicao-voz-retransmissor.md`).
 
 ## O que fica para depois (ordem sugerida)
 escolha de microfone/fone · DMs e amigos · anexos e prévia de links · cargos e permissões (pacote `permissions` do doc 03) · lista virtualizada para canais grandes · servidor hospedado (VPS) com HTTPS · depois, o restante do roadmap.

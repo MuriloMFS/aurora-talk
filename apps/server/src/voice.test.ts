@@ -58,6 +58,7 @@ describe("canais de voz", () => {
     expect(ok.status).toBe(200);
     expect(ok.data.room).toBe(`aurora-voice-${voice.id}`);
     expect(ok.data.url).toBe("ws://127.0.0.1:7880");
+    expect(ok.data.iceServers).toBeUndefined(); // sem retransmissor configurado: conexão direta
     const claims = decodeJwt(ok.data.token);
     expect(claims.sub).toBe(ana.user.id);
     expect(claims.iss).toBe("devkey");

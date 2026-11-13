@@ -1,0 +1,17 @@
+[Unit]
+Description=Aurora: API, gateway (WebSocket) e site de download
+After=network-online.target aurora-livekit.service
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=%h/aurora/aurora.env
+ExecStart=%h/aurora/node/bin/node --disable-warning=ExperimentalWarning --enable-source-maps %h/aurora/bin/aurora-server.mjs
+WorkingDirectory=%h/aurora
+Restart=always
+RestartSec=3
+# dá tempo de fechar o banco com calma ao parar
+TimeoutStopSec=15
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

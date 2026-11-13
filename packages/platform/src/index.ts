@@ -96,9 +96,16 @@ export interface MediaEngineEvents {
   onScreenSharesChange(shares: ScreenShare[]): void;
 }
 
+/** Onde e como entrar na sala de mídia. `iceServers` = retransmissor TURN (quem está fora da rede do servidor). */
+export interface MediaCredentials {
+  url: string;
+  token: string;
+  iceServers?: { urls: string[]; username?: string; credential?: string }[];
+}
+
 /** Voz/vídeo. A UI nunca chama o LiveKit (ou um motor nativo futuro) direto — só esta interface. */
 export interface MediaEngine {
-  join(credentials: { url: string; token: string }, events: MediaEngineEvents, options: { muted: boolean; deafened: boolean }): Promise<void>;
+  join(credentials: MediaCredentials, events: MediaEngineEvents, options: { muted: boolean; deafened: boolean }): Promise<void>;
   leave(): Promise<void>;
   setMuted(muted: boolean): Promise<void>;
   setDeafened(deafened: boolean): void;

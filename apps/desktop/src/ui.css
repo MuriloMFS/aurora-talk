@@ -865,3 +865,10 @@
   font-size: var(--text-xs);
   line-height: var(--leading-xs);
 }
+
+/* login: "usar outro servidor" (versão oficial esconde o campo de servidor) */
+.auth__advanced {
+  align-self: center;
+  margin-top: var(--space-4);
+  color: var(--text-secondary);
+}

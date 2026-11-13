@@ -1,7 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { applyTheme, nextPreference, readPreference, savePreference, watchSystemTheme, type ThemePreference } from "@aurora/ui/theme";
 import { ChatApp } from "./ChatApp";
-import { clearSession, lastServerUrl, loadSession, saveSession, type Session } from "./net/session";
+import { DEFAULT_SERVER_URL, IS_HOSTED, clearSession, isLocalAddress, lastServerUrl, loadSession, saveSession, type Session } from "./net/session";
+
+/** Sessão de um servidor caseiro (1.x) na versão oficial: o servidor agora é outro, então entra de novo. */
+const MOVED_NOTICE = "O Aurora agora funciona pela internet. Entre de novo; se for a primeira vez neste servidor, crie sua conta.";
+const initialSession = (): Session | null => {
+  const session = loadSession();
+  if (session && IS_HOSTED && session.serverUrl !== DEFAULT_SERVER_URL && isLocalAddress(session.serverUrl)) {
+    clearSession();
+    return null;
+  }
+  return session;
+};
+const movedFromLocal = (() => {
+  const session = loadSession();
+  return Boolean(session && IS_HOSTED && session.serverUrl !== DEFAULT_SERVER_URL && isLocalAddress(session.serverUrl));
+})();
 import { AuthScreen } from "./ui/AuthScreen";
 import { UpdateButton, UpdateStatus, useAppUpdate } from "./ui/update";
 
@@ -18,8 +33,8 @@ export function App() {
   const cycleTheme = useCallback(() => setThemePreference((p) => nextPreference(p)), []);
 
   // ---- sessão ----
-  const [session, setSession] = useState<Session | null>(() => loadSession());
-  const [notice, setNotice] = useState<string | null>(null);
+  const [session, setSession] = useState<Session | null>(initialSession);
+  const [notice, setNotice] = useState<string | null>(movedFromLocal ? MOVED_NOTICE : null);
 
   const logout = useCallback((message: string | null) => {
     clearSession();

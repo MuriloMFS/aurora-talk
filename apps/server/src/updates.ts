@@ -15,6 +15,7 @@ export interface ReleaseManifest {
 }
 
 const VERSION = /^\d+\.\d+\.\d+$/;
+const WINDOWS = "windows-x86_64";
 const FILE = /^[A-Za-z0-9._-]+$/;
 
 export function compareVersions(a: string, b: string): number {
@@ -56,6 +57,25 @@ export function registerUpdateRoutes(app: FastifyInstance, releasesDir: string):
       url: `${origin}/api/updates/download/${manifest.version}/${encodeURIComponent(platform.file)}`,
       signature: platform.signature,
     };
+  });
+
+  /** Para o site: versão atual do instalador do Windows (o botão "Baixar" mostra versão e tamanho). */
+  app.get("/api/releases/latest", async (_request, reply) => {
+    const manifest = readManifest(root);
+    const windows = manifest?.platforms[WINDOWS];
+    const path = manifest && windows && FILE.test(windows.file) ? resolve(root, manifest.version, windows.file) : null;
+    if (!manifest || !windows || !path || !existsSync(path)) {
+      return reply.status(404).send({ error: { code: "not_found", message: "Ainda não há versão publicada." } });
+    }
+    return { version: manifest.version, notes: manifest.notes ?? "", pubDate: manifest.pub_date ?? null, size: statSync(path).size, download: "/download/windows" };
+  });
+
+  /** Link fixo do site: sempre o instalador mais novo. */
+  app.get("/download/windows", async (_request, reply) => {
+    const manifest = readManifest(root);
+    const windows = manifest?.platforms[WINDOWS];
+    if (!manifest || !windows) return reply.status(404).send({ error: { code: "not_found", message: "Ainda não há versão publicada." } });
+    return reply.header("Cache-Control", "no-cache").redirect(`/api/updates/download/${manifest.version}/${encodeURIComponent(windows.file)}`, 302);
   });
 
   app.get<{ Params: { version: string; file: string } }>("/api/updates/download/:version/:file", async (request, reply) => {

@@ -1,0 +1,6 @@
+[Unit]
+Description=Aurora: confere se o IP público mudou (e reinicia a voz se mudar)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env bash %h/aurora/bin/aurora-ipwatch.sh

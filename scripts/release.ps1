@@ -2,9 +2,11 @@
 # 1) gera o app assinado com a chave em %USERPROFILE%\.aurora\updater (fora do repositorio)
 # 2) copia o instalador para apps/server/releases/<versao>/ e escreve apps/server/releases/latest.json
 # Os apps instalados (1.0.1+) pegam a versao nova sozinhos ao abrir.
-# Uso: pnpm release -- -Notes "O que mudou"      (a versao vem de apps/desktop/src-tauri/tauri.conf.json)
+# Uso: pnpm release -- -Notes "O que mudou" -ServerUrl https://aurora.seudominio.com
+#   -ServerUrl: servidor oficial embutido no app (como o discord.com); sem ele o app aponta para localhost.
+#   (a versao vem de apps/desktop/src-tauri/tauri.conf.json; para publicar no servidor: scripts/deploy.ps1)
 # Obs.: mensagens sem acento de proposito (PowerShell 5.1 le .ps1 sem BOM como ANSI).
-param([string] $Notes = '')
+param([string] $Notes = '', [string] $ServerUrl = '')
 $ErrorActionPreference = 'Stop'
 
 $Root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -17,6 +19,13 @@ if (-not (Test-Path $Key)) { throw "Chave de assinatura nao encontrada em $Key. 
 $env:TAURI_SIGNING_PRIVATE_KEY = $Key
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = (Get-Content -LiteralPath $PasswordFile -Raw).Trim()
 $env:COREPACK_ENABLE_DOWNLOAD_PROMPT = '0'
+if ($ServerUrl) {
+  if ($ServerUrl -notmatch '^https://[A-Za-z0-9.-]+(:\d+)?/?$') { throw "ServerUrl deve ser https://host (recebido: $ServerUrl)" }
+  $env:VITE_AURORA_SERVER_URL = $ServerUrl.TrimEnd('/')
+  Write-Host "Servidor oficial embutido no app: $env:VITE_AURORA_SERVER_URL"
+} else {
+  Write-Host "AVISO: sem -ServerUrl o app publicado aponta para http://localhost:3000 (so serve para testes)."
+}
 $Cargo = Join-Path $env:USERPROFILE '.cargo\bin'
 if ($env:PATH -notlike "*$Cargo*") { $env:PATH = "$Cargo;$env:PATH" }
 
@@ -27,7 +36,7 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "tauri build falhou (codigo $LASTEXITCODE)" }
 } finally {
   Pop-Location
-  Remove-Item Env:\TAURI_SIGNING_PRIVATE_KEY, Env:\TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
+  Remove-Item Env:\TAURI_SIGNING_PRIVATE_KEY, Env:\TAURI_SIGNING_PRIVATE_KEY_PASSWORD, Env:\VITE_AURORA_SERVER_URL -ErrorAction SilentlyContinue
 }
 
 $Bundle = Join-Path $Root 'apps\desktop\src-tauri\target\release\bundle\nsis'

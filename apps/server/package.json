@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning src/index.ts",
     "dev": "node --disable-warning=ExperimentalWarning --watch src/index.ts",
+    "bundle": "vite build --config vite.bundle.config.ts",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run"
   },
@@ -21,6 +22,7 @@
     "@types/node": "^26.6.6",
     "@types/ws": "^8.18.2",
     "typescript": "^7.0.2",
+    "vite": "^8.3.8",
     "vitest": "^5.1.0"
   }
 }

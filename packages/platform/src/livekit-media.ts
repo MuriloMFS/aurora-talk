@@ -1,5 +1,6 @@
 import { AudioPresets, ConnectionState, Room, RoomEvent, Track, type RemoteTrack } from "livekit-client";
-import type { MediaEngine, MediaEngineEvents, PlatformInfo, PlatformPort, ScreenShare, SystemAudioCapture, VoiceConnectionState } from "./index";
+import type { MediaCredentials, MediaEngine, MediaEngineEvents, PlatformInfo, PlatformPort, ScreenShare, SystemAudioCapture, VoiceConnectionState } from "./index";
+import { rtcConfigFor } from "./ice";
 import { SCREEN_SHARE_PROFILES, canExcludeOwnAudio, displayMediaOptions, type ScreenShareOptions, type ScreenShareResult } from "./screen-share";
 
 function toState(state: ConnectionState): VoiceConnectionState {
@@ -16,6 +17,7 @@ function toState(state: ConnectionState): VoiceConnectionState {
 }
 
 type VideoTrack = Pick<RemoteTrack, "attach" | "detach">;
+
 
 function shareOf(identity: string, local: boolean, track: VideoTrack): ScreenShare {
   return {
@@ -47,7 +49,7 @@ export class LiveKitMediaEngine implements MediaEngine {
     this.info = info;
   }
 
-  async join(credentials: { url: string; token: string }, events: MediaEngineEvents, options: { muted: boolean; deafened: boolean }): Promise<void> {
+  async join(credentials: MediaCredentials, events: MediaEngineEvents, options: { muted: boolean; deafened: boolean }): Promise<void> {
     await this.leave();
     const room = new Room({
       adaptiveStream: true,
@@ -79,7 +81,8 @@ export class LiveKitMediaEngine implements MediaEngine {
     room.on(RoomEvent.LocalTrackUnpublished, (publication) => publication.source === Track.Source.ScreenShare && this.emitShares());
 
     events.onStateChange("connecting");
-    await room.connect(credentials.url, credentials.token);
+    const rtcConfig = rtcConfigFor(credentials);
+    await room.connect(credentials.url, credentials.token, rtcConfig && { rtcConfig });
     await room.localParticipant.setMicrophoneEnabled(!options.muted && !options.deafened);
     events.onStateChange("connected");
   }

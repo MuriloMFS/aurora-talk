@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="pt-BR" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Aurora — converse, jogue e fique junto</title>
+    <meta name="description" content="Servidores com canais de texto e voz, compartilhamento de tela e tudo em um app leve para Windows. Baixe grátis." />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- tema antes do 1º paint, em arquivo próprio (CSP sem scripts inline) -->
+    <script src="/theme-init.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#baixar">Pular para o download</a>
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="Aurora, início">
+        <img class="brand__logo" src="/favicon.svg" alt="" width="32" height="32" />
+        <span class="brand__name">Aurora</span>
+      </a>
+      <nav class="site-nav" aria-label="Principal">
+        <a href="#recursos">Recursos</a>
+        <a href="#instalar">Como instalar</a>
+        <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Trocar tema">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" /></svg>
+        </button>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero__text">
+          <h1 id="hero-title" class="hero__title">Converse, jogue e fique junto.</h1>
+          <p class="hero__lead">
+            Crie um servidor para a sua turma, com canais de texto e de voz, compartilhamento de tela em até 1080p e o som do jogo junto, num app leve que se atualiza sozinho.
+          </p>
+          <div class="hero__actions" id="baixar">
+            <a class="button button--primary button--large" id="download-button" href="/download/windows" download>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" x2="12" y1="15" y2="3" />
+              </svg>
+              Baixar para Windows
+            </a>
+            <a class="button button--secondary button--large" href="#recursos">Ver recursos</a>
+          </div>
+          <p class="hero__meta" id="release-meta" aria-live="polite">Windows 10 e 11 · 64 bits · grátis</p>
+          <p class="notice" id="platform-note" hidden>Por enquanto o Aurora é só para Windows. Abra esta página no seu PC para baixar.</p>
+        </div>
+
+        <!-- ilustração geométrica original do app (decorativa) -->
+        <div class="mock" aria-hidden="true">
+          <div class="mock__rail">
+            <span class="mock__tile mock__tile--active"></span>
+            <span class="mock__tile"></span>
+            <span class="mock__tile"></span>
+          </div>
+          <div class="mock__sidebar">
+            <span class="mock__line mock__line--title"></span>
+            <span class="mock__channel mock__channel--active"><i></i></span>
+            <span class="mock__channel"><i></i></span>
+            <span class="mock__channel"><i></i></span>
+            <span class="mock__voice"><span class="mock__avatar mock__avatar--speaking"></span><i></i></span>
+            <span class="mock__voice"><span class="mock__avatar"></span><i></i></span>
+          </div>
+          <div class="mock__chat">
+            <div class="mock__message"><span class="mock__avatar mock__avatar--lg"></span><div><i class="w40"></i><i class="w90"></i><i class="w70"></i></div></div>
+            <div class="mock__message"><span class="mock__avatar mock__avatar--lg mock__avatar--alt"></span><div><i class="w30"></i><i class="w60"></i><span class="mock__reactions"><b></b><b></b></span></div></div>
+            <div class="mock__stream"><span class="mock__live">AO VIVO</span></div>
+            <span class="mock__composer"></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="features" id="recursos" aria-labelledby="recursos-title">
+        <h2 id="recursos-title" class="section-title">Tudo o que a sua turma precisa</h2>
+        <ul class="feature-grid">
+          <li class="feature">
+            <span class="feature__icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg></span>
+            <h3 class="feature__title">Conversa de verdade</h3>
+            <p class="feature__text">Canais de texto com respostas, reações, @menções, Markdown e aviso do que você ainda não leu.</p>
+          </li>
+          <li class="feature">
+            <span class="feature__icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" x2="12" y1="19" y2="22" /></svg></span>
+            <h3 class="feature__title">Voz sem complicação</h3>
+            <p class="feature__text">Entre na sala com um clique. Veja quem está falando, mute ou ensurdeça quando quiser.</p>
+          </li>
+          <li class="feature">
+            <span class="feature__icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-3" /><path d="M8 21h8" /><path d="M12 17v4" /><path d="m17 8 5-5" /><path d="M17 3h5v5" /></svg></span>
+            <h3 class="feature__title">Tela ao vivo</h3>
+            <p class="feature__text">Mostre a tela inteira ou só uma janela, em até 1080p e 60 fps, com o som do computador e sem eco.</p>
+          </li>
+          <li class="feature">
+            <span class="feature__icon"><svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg></span>
+            <h3 class="feature__title">Leve e sempre atualizado</h3>
+            <p class="feature__text">Instalador de poucos megabytes. As novas versões chegam sozinhas, conferidas por assinatura digital.</p>
+          </li>
+        </ul>
+      </section>
+
+      <section class="install" id="instalar" aria-labelledby="instalar-title">
+        <h2 id="instalar-title" class="section-title">Como instalar</h2>
+        <ol class="steps">
+          <li class="step">
+            <span class="step__number" aria-hidden="true">1</span>
+            <div>
+              <h3 class="step__title">Baixe o instalador</h3>
+              <p class="step__text">Clique em <a href="/download/windows" download>Baixar para Windows</a>.</p>
+            </div>
+          </li>
+          <li class="step">
+            <span class="step__number" aria-hidden="true">2</span>
+            <div>
+              <h3 class="step__title">Abra o arquivo baixado</h3>
+              <p class="step__text">
+                Se o Windows mostrar "O Windows protegeu o computador", clique em <strong>Mais informações</strong> e depois em <strong>Executar assim mesmo</strong>. O aviso aparece porque o Aurora ainda não tem certificado de assinatura de código.
+              </p>
+            </div>
+          </li>
+          <li class="step">
+            <span class="step__number" aria-hidden="true">3</span>
+            <div>
+              <h3 class="step__title">Crie sua conta</h3>
+              <p class="step__text">Escolha um usuário e uma senha, crie seu servidor e chame a turma com um código de convite.</p>
+            </div>
+          </li>
+        </ol>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>© 2026 Aurora (nome provisório)</span>
+      <span id="footer-version"></span>
+    </footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

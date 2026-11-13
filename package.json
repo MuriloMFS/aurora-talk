@@ -12,6 +12,7 @@
     "dev": "pnpm --filter @aurora/desktop tauri dev",
     "dev:web": "pnpm --filter @aurora/desktop dev",
     "release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1",
+    "deploy:server": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy.ps1",
     "build:desktop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test"

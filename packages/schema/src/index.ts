@@ -30,11 +30,23 @@ export interface VoiceState {
   streaming: boolean;
 }
 
+/** Servidor STUN/TURN no formato do `RTCIceServer` do WebRTC. */
+export interface IceServer {
+  urls: string[];
+  username?: string;
+  credential?: string;
+}
+
 /** Credenciais para entrar na sala de mídia (LiveKit) de um canal de voz. */
 export interface VoiceToken {
   url: string;
   token: string;
   room: string;
+  /**
+   * Retransmissor (TURN) com credenciais temporárias, para quem está fora da rede do servidor
+   * chegar à mídia sem portas abertas no roteador. Ausente = conexão direta ao LiveKit.
+   */
+  iceServers?: IceServer[];
 }
 
 export interface Member {

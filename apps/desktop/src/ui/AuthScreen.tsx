@@ -1,7 +1,7 @@
 import { useId, useState, type FormEvent, type ReactNode } from "react";
 import { LIMITS } from "@aurora/schema";
 import { ApiClient, ApiError } from "../net/api";
-import { normalizeServerUrl, type Session } from "../net/session";
+import { IS_HOSTED, normalizeServerUrl, type Session } from "../net/session";
 
 type Mode = "login" | "register";
 
@@ -27,6 +27,8 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 export function AuthScreen({ initialServerUrl, notice, onAuthenticated }: { initialServerUrl: string; notice: string | null; onAuthenticated: (session: Session) => void }) {
   const [mode, setMode] = useState<Mode>("login");
   const [serverUrl, setServerUrl] = useState(initialServerUrl);
+  // versão oficial: o servidor já vem certo (como no Discord); outro servidor fica em "Opções avançadas"
+  const [showServer, setShowServer] = useState(!IS_HOSTED);
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
@@ -82,11 +84,13 @@ export function AuthScreen({ initialServerUrl, notice, onAuthenticated }: { init
         )}
 
         <form className="form" onSubmit={submit} aria-describedby={error ? errorId : undefined}>
-          <Field label="Servidor" hint="No mesmo PC: http://localhost:3000 · na rede: http://IP-do-PC:3000">
-            {({ id, describedBy }) => (
-              <input id={id} aria-describedby={describedBy} className="input" value={serverUrl} onChange={(e) => setServerUrl(e.target.value)} autoComplete="url" spellCheck={false} required />
-            )}
-          </Field>
+          {showServer ? (
+            <Field label="Servidor" hint={IS_HOSTED ? "Só mude se alguém te passou o endereço de outro servidor do Aurora." : "No mesmo PC: http://localhost:3000 · na rede: http://IP-do-PC:3000"}>
+              {({ id, describedBy }) => (
+                <input id={id} aria-describedby={describedBy} className="input" value={serverUrl} onChange={(e) => setServerUrl(e.target.value)} autoComplete="url" spellCheck={false} required />
+              )}
+            </Field>
+          ) : null}
           <Field label="Usuário" hint={isRegister ? "Letras minúsculas, números, ponto e sublinhado." : undefined}>
             {({ id, describedBy }) => (
               <input
@@ -134,6 +138,11 @@ export function AuthScreen({ initialServerUrl, notice, onAuthenticated }: { init
             {busy ? "Aguarde…" : isRegister ? "Criar conta" : "Entrar"}
           </button>
         </form>
+        {!showServer && (
+          <button type="button" className="button button--ghost button--small auth__advanced" onClick={() => setShowServer(true)}>
+            Usar outro servidor
+          </button>
+        )}
       </div>
     </main>
   );

@@ -16,6 +16,7 @@ import {
   type Guild,
   type Id,
   type Message,
+  type IceServer,
   type User,
   type VoiceToken,
 } from "@aurora/schema";
@@ -24,9 +25,11 @@ import type { Gateway } from "./gateway.ts";
 import { isValidId } from "./ids.ts";
 import { RateLimiter } from "./rate-limit.ts";
 import type { Store } from "./store.ts";
+import { registerSiteRoutes } from "./site.ts";
+import type { IceServerSource } from "./turn.ts";
 import { registerUpdateRoutes } from "./updates.ts";
 
-export const SERVER_VERSION = "1.0.1";
+export const SERVER_VERSION = "1.3.2";
 
 export class HttpError extends Error {
   readonly status: number;
@@ -92,16 +95,39 @@ interface Deps {
   releasesDir?: string;
   /** Servidor de mídia LiveKit. `url` vazio = mesmo host pelo qual o cliente chegou, porta 7880. */
   voice?: { apiKey: string; apiSecret: string; url?: string };
+  /** Retransmissor TURN (credenciais temporárias por entrada na voz). Sem ele, só conexão direta à mídia. */
+  turn?: IceServerSource;
+  /** Pasta do site de download (apps/site/dist). Sem ela, "/" responde 404. */
+  siteDir?: string;
+  /**
+   * Atrás do Cloudflare Tunnel todo acesso chega de 127.0.0.1: o IP real vem em `CF-Connecting-IP`.
+   * Só ligue com o servidor escutando em 127.0.0.1 (senão qualquer um na rede forja o cabeçalho).
+   */
+  trustCloudflare?: boolean;
 }
 
 const VOICE_TOKEN_TTL = "6h";
 
-export async function buildApp({ store, gateway, logger = false, releasesDir, voice }: Deps): Promise<FastifyInstance> {
+export async function buildApp({ store, gateway, logger = false, releasesDir, voice, turn, siteDir, trustCloudflare = false }: Deps): Promise<FastifyInstance> {
   // Nível "warn": logs de cada requisição (nível info) ficam de fora.
   const app = Fastify({
     logger: logger ? { level: "warn" } : false,
     bodyLimit: 64 * 1024,
+    // Atrás do Cloudflare Tunnel: só o cloudflared (mesma máquina) é proxy confiável, para que
+    // protocolo (https) e host públicos venham de X-Forwarded-Proto/Host (links de atualização certos).
+    trustProxy: trustCloudflare ? "127.0.0.1" : false,
   });
+
+  // Público só por https: quem chegar por http (pela Cloudflare) é levado para o mesmo endereço em https.
+  if (trustCloudflare) {
+    app.addHook("onRequest", async (request, reply) => {
+      if (request.headers["x-forwarded-proto"] !== "http") return;
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return reply.status(403).send({ error: { code: "https_required", message: "Use o endereço com https://." } });
+      }
+      return reply.redirect(`https://${request.host}${request.url}`, 301);
+    });
+  }
 
   // Autenticação por token Bearer (sem cookies), então qualquer origem pode chamar.
   await app.register(cors, {
@@ -144,6 +170,11 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     if (!user) throw new HttpError(401, "unauthorized", "Sessão inválida ou expirada. Entre novamente.");
     return { user, tokenHash };
   };
+  /** IP de quem fez a requisição (o real, quando atrás do Cloudflare). */
+  const clientIp = (request: FastifyRequest): string => {
+    const forwarded = trustCloudflare ? request.headers["cf-connecting-ip"] : undefined;
+    return typeof forwarded === "string" && forwarded.length <= 64 ? forwarded : request.ip;
+  };
   const limit = (limiter: RateLimiter, key: string) => {
     if (!limiter.allow(key)) throw new HttpError(429, "rate_limited", "Muitas ações seguidas. Espere alguns segundos e tente de novo.");
   };
@@ -179,10 +210,10 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
   };
 
   /* ---------- rotas ---------- */
-  app.get("/api/health", async () => ({ ok: true, version: SERVER_VERSION }));
+  app.get("/api/health", async () => ({ ok: true, version: SERVER_VERSION, voiceRelay: Boolean(turn) }));
 
   app.post("/api/auth/register", async (request, reply) => {
-    limit(authLimiter, `auth:${request.ip}`);
+    limit(authLimiter, `auth:${clientIp(request)}`);
     const body = registerBody.parse(request.body);
     if (store.usernameExists(body.username)) throw new HttpError(409, "username_taken", "Esse nome de usuário já está em uso.");
     const user = store.createUser(body.username, body.displayName ?? body.username, await hashPassword(body.password));
@@ -190,7 +221,7 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
   });
 
   app.post("/api/auth/login", async (request) => {
-    limit(authLimiter, `auth:${request.ip}`);
+    limit(authLimiter, `auth:${clientIp(request)}`);
     const body = loginBody.parse(request.body);
     const credentials = store.findCredentials(body.username);
     const ok = credentials ? await verifyPassword(body.password, credentials.passwordHash) : await verifyAgainstDummy(body.password);
@@ -261,7 +292,16 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     const token = new AccessToken(voice.apiKey, voice.apiSecret, { identity: user.id, name: user.displayName, ttl: VOICE_TOKEN_TTL });
     token.addGrant({ room, roomJoin: true, canPublish: true, canSubscribe: true, canPublishData: false });
     const url = voice.url || `${request.protocol === "https" ? "wss" : "ws"}://${request.hostname}:7880`;
-    return { url, token: await token.toJwt(), room };
+    // Sem o retransmissor, a voz ainda funciona para quem alcança o LiveKit direto (rede local).
+    let iceServers: IceServer[] | undefined;
+    if (turn) {
+      try {
+        iceServers = await turn();
+      } catch (error) {
+        request.log.warn({ err: error }, "retransmissor TURN indisponível: esta entrada na voz segue só com conexão direta");
+      }
+    }
+    return { url, token: await token.toJwt(), room, ...(iceServers && { iceServers }) };
   });
 
   app.get<{ Params: { channelId: string } }>("/api/channels/:channelId/messages", async (request) => {
@@ -366,6 +406,7 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
   app.get(GATEWAY_PATH, { websocket: true }, (socket) => gateway.handle(socket));
 
   if (releasesDir) registerUpdateRoutes(app, releasesDir);
+  if (siteDir) registerSiteRoutes(app, siteDir);
 
   return app;
 }
