@@ -26,11 +26,7 @@ fetch("/api/releases/latest")
       for (const link of document.querySelectorAll("[data-download]")) link.setAttribute("aria-disabled", "true");
       return;
     }
-    const size = formatSize(release.size);
-    fill("[data-release-line]", `Versão ${release.version} para Windows 10 e 11`);
-    fill("[data-release-meta]", `${size} · Grátis · 64 bits`);
-    fill("[data-release-size]", size);
-    fill("[data-release-version]", release.version);
+    fill("[data-release-meta]", `Windows 10 e 11 · ${formatSize(release.size)}`);
     fill("[data-release-version-label]", `Versão ${release.version}`);
   })
   .catch(() => undefined); // sem rede: ficam os textos padrão, e os links de download continuam funcionando

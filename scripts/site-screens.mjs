@@ -1,4 +1,5 @@
-// Telas reais do Aurora para o site de download (apps/site/screens), em WebP 2x, nos temas escuro e claro.
+// Telas reais do Aurora para o site de download (apps/site/screens): o app aberto e a janela de
+// transmissão de tela, em WebP 2x, nos temas escuro e claro.
 // Monta uma conversa de exemplo num servidor LOCAL com banco vazio e fotografa a interface num
 // Microsoft Edge sem janela (áudio mudo). Nada vai para a internet.
 //
@@ -187,16 +188,6 @@ try {
     await evaluate(`document.activeElement?.blur(); document.querySelector(".messages")?.scrollTo({ top: 1e6 }); true`);
     await wait(400);
     await shot(`app-${theme}`);
-    const chat = await rectOf("main.chat");
-    if (chat) await shot(`chat-${theme}`, chat);
-    // lateral compacta (sem o vão entre os canais e o painel de voz)
-    await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 600, deviceScaleFactor: 2, mobile: false });
-    await wait(600);
-    const sidebar = await rectOf(".sidebar");
-    if (sidebar) await shot(`voice-${theme}`, sidebar);
-    await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 840, deviceScaleFactor: 2, mobile: false });
-    await wait(600);
-
     // diálogo de transmissão de tela
     await clickLabel("Compartilhar tela");
     await wait(700);
@@ -206,14 +197,6 @@ try {
     await key("Escape", "Escape", 27);
     await wait(400);
 
-    // configurações → voz e vídeo
-    await key(",", "Comma", 188, 2);
-    await wait(600);
-    await evaluate(`[...document.querySelectorAll(".settings__nav-item")].find((x) => x.textContent.trim() === "Voz e vídeo").click(); document.activeElement?.blur(); true`);
-    await wait(800);
-    await shot(`settings-${theme}`);
-    await key("Escape", "Escape", 27);
-    await wait(300);
     await clickLabel("Sair da voz");
     await wait(800);
   }
