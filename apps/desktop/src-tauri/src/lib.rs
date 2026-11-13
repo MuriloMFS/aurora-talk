@@ -1,9 +1,14 @@
 use std::sync::Mutex;
 
+mod desktop_settings;
 mod system_audio;
 
+use desktop_settings::DesktopPrefs;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 /// Como o Discord (Electron) faz: o app concede microfone/câmera às PRÓPRIAS telas, sem a caixa de
@@ -176,6 +181,33 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
+/// Ícone na bandeja (ao lado do relógio): clicar abre a janela; o menu tem "Sair" de verdade,
+/// já que fechar a janela pode só escondê-la (fechar para a bandeja).
+fn create_tray(app: &AppHandle) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "show", "Abrir o Aurora", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Sair do Aurora", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &PredefinedMenuItem::separator(app)?, &quit])?;
+    let mut tray = TrayIconBuilder::with_id("main")
+        .tooltip("Aurora")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => show_main_window(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -185,7 +217,9 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![desktop_settings::AUTOSTART_ARG])))
         .manage(PendingUpdate::default())
+        .manage(DesktopPrefs::default())
         .manage(system_audio::SystemAudio::default())
         .invoke_handler(tauri::generate_handler![
             check_update,
@@ -193,12 +227,34 @@ pub fn run() {
             set_taskbar_badge,
             request_attention,
             system_audio::system_audio_start,
-            system_audio::system_audio_stop
+            system_audio::system_audio_stop,
+            desktop_settings::get_desktop_settings,
+            desktop_settings::set_desktop_settings
         ])
+        // Fechar para a bandeja: a janela some, o app (e a voz) continuam. "Sair" fica no menu da bandeja.
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" && desktop_settings::close_to_tray(window.app_handle()) {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(|app| {
+            let prefs = desktop_settings::load(app.handle());
+            *app.state::<DesktopPrefs>().0.lock().expect("preferências do desktop") = prefs;
+            create_tray(app.handle())?;
             #[cfg(windows)]
             if let Some(window) = app.get_webview_window("main") {
                 media_permissions::allow_for_app(&window)?;
+            }
+            // A janela nasce escondida (tauri.conf.json) para não piscar quando abre com o Windows
+            // em modo minimizado; nos demais casos aparece já aqui.
+            let args: Vec<String> = std::env::args().collect();
+            if !desktop_settings::should_start_hidden(&prefs, &args) {
+                if let Some(window) = app.get_webview_window("main") {
+                    window.show()?;
+                }
             }
             if cfg!(debug_assertions) {
                 app.handle().plugin(

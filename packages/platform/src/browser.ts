@@ -31,5 +31,11 @@ export function createBrowserPlatform(): PlatformPort {
     async requestAttention() {
       // o navegador não tem como piscar a barra de tarefas
     },
+    async getDesktopSettings() {
+      return null; // bandeja e início com o sistema só existem no app instalado
+    },
+    async setDesktopSettings() {
+      throw new Error("Essas opções só existem no app instalado.");
+    },
   };
 }

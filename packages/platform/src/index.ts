@@ -4,8 +4,10 @@
  * A interface cresce por necessidade real; todo método existe nas duas variantes.
  */
 import { isTauri } from "@tauri-apps/api/core";
+import type { VoiceSettings } from "./audio";
 import type { ScreenShareOptions, ScreenShareResult } from "./screen-share";
 
+export * from "./audio";
 export * from "./screen-share";
 
 export type PlatformKind = "tauri" | "browser";
@@ -27,6 +29,16 @@ export interface SystemAudioCapture {
   track: MediaStreamTrack;
   /** Para a captura nativa e encerra a trilha. Pode ser chamado mais de uma vez. */
   stop(): Promise<void>;
+}
+
+/** Opções que dependem do sistema (só no app instalado). */
+export interface DesktopSettings {
+  /** Abrir o Aurora quando o Windows iniciar. */
+  openOnStartup: boolean;
+  /** Ao abrir com o Windows, ficar só na bandeja. */
+  startMinimized: boolean;
+  /** Fechar a janela só esconde: o app continua na bandeja (e na voz). */
+  closeToTray: boolean;
 }
 
 export interface UpdateInfo {
@@ -60,6 +72,10 @@ export interface PlatformPort {
   setBadge(count: number): Promise<void>;
   /** Pisca o ícone na barra de tarefas se o app estiver em segundo plano. */
   requestAttention(): Promise<void>;
+  /** Opções do Windows (bandeja, iniciar com o sistema). `null` = não existem aqui (navegador). */
+  getDesktopSettings(): Promise<DesktopSettings | null>;
+  /** Salva e aplica; devolve o que ficou valendo. */
+  setDesktopSettings(settings: DesktopSettings): Promise<DesktopSettings>;
 }
 
 /** Só links da web saem do app (evita `file:`, `javascript:` etc.). */
@@ -105,7 +121,9 @@ export interface MediaCredentials {
 
 /** Voz/vídeo. A UI nunca chama o LiveKit (ou um motor nativo futuro) direto — só esta interface. */
 export interface MediaEngine {
-  join(credentials: MediaCredentials, events: MediaEngineEvents, options: { muted: boolean; deafened: boolean }): Promise<void>;
+  join(credentials: MediaCredentials, events: MediaEngineEvents, options: { muted: boolean; deafened: boolean; voice?: VoiceSettings }): Promise<void>;
+  /** Troca microfone, alto-falante, volumes ou processamento, inclusive no meio da chamada. */
+  applyVoiceSettings(settings: VoiceSettings): Promise<void>;
   leave(): Promise<void>;
   setMuted(muted: boolean): Promise<void>;
   setDeafened(deafened: boolean): void;

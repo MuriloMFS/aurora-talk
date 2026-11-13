@@ -183,8 +183,9 @@ export const GATEWAY_PATH = "/gateway";
 export const HEARTBEAT_INTERVAL_MS = 30_000;
 /**
  * Versão do protocolo do gateway que este cliente entende.
- * 2 = reações e leitura (eventos MESSAGE_REACTION_* e READ_STATE_UPDATE). Clientes sem `v` (1.2.x)
- * não recebem esses eventos — o reducer antigo não os conhece.
+ * 2 = reações, leitura e perfil (MESSAGE_REACTION_*, READ_STATE_UPDATE, USER_UPDATE). Clientes sem
+ * `v` (1.2.x) não recebem esses eventos — o reducer antigo não os conhece. Do 1.3.0 em diante, o
+ * reducer ignora eventos que não conhece, então eventos novos podem entrar nesta mesma versão.
  */
 export const GATEWAY_VERSION = 2;
 
@@ -210,7 +211,9 @@ export type DispatchEvent =
   | { t: "MESSAGE_REACTION_ADD"; d: ReactionEvent }
   | { t: "MESSAGE_REACTION_REMOVE"; d: ReactionEvent }
   /** Só para o próprio usuário: leu um canal em outro aparelho/aba. */
-  | { t: "READ_STATE_UPDATE"; d: { channelId: Id; lastReadId: Id } };
+  | { t: "READ_STATE_UPDATE"; d: { channelId: Id; lastReadId: Id } }
+  /** Alguém (inclusive eu, em outro aparelho) mudou o nome de exibição. */
+  | { t: "USER_UPDATE"; d: User };
 
 export interface ReactionEvent {
   channelId: Id;
@@ -220,7 +223,7 @@ export interface ReactionEvent {
 }
 
 /** Eventos que só vão para clientes com `identify.v >= 2`. */
-export const V2_EVENTS: ReadonlySet<DispatchEvent["t"]> = new Set(["MESSAGE_REACTION_ADD", "MESSAGE_REACTION_REMOVE", "READ_STATE_UPDATE"]);
+export const V2_EVENTS: ReadonlySet<DispatchEvent["t"]> = new Set(["MESSAGE_REACTION_ADD", "MESSAGE_REACTION_REMOVE", "READ_STATE_UPDATE", "USER_UPDATE"]);
 
 export type ServerFrame =
   | { op: "hello"; heartbeatIntervalMs: number }

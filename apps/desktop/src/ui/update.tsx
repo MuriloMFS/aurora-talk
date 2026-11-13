@@ -86,8 +86,23 @@ export function useAppUpdate(serverUrl: string) {
     };
   }, [serverUrl, install]);
 
+  /** "Procurar atualizações" das configurações: responde na hora o que encontrou. */
+  const checkNow = useCallback(async (): Promise<"available" | "current" | "unsupported" | "error"> => {
+    const platform = platformRef.current;
+    if (!platform) return "unsupported";
+    try {
+      const update = await platform.checkForUpdate(serverUrl);
+      if (!update) return "current";
+      setPhase((current) => (current.kind === "installing" ? current : { kind: "available", update }));
+      return "available";
+    } catch {
+      return "error";
+    }
+  }, [serverUrl]);
+
   return {
     phase,
+    checkNow,
     available: phase.kind === "available" ? phase.update : null,
     install: () => phase.kind === "available" && void install(phase.update),
     dismissError: () => setPhase({ kind: "idle" }),

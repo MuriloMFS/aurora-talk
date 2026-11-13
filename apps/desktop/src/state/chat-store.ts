@@ -121,6 +121,28 @@ function withGuild(state: ChatState, guild: Guild): ChatState {
   };
 }
 
+/** Nome de exibição novo: vale para mim, para a lista de membros e para as mensagens já carregadas. */
+function withUser(state: ChatState, user: User): ChatState {
+  const members: ChatState["members"] = {};
+  for (const [guildId, byUser] of Object.entries(state.members)) {
+    const member = byUser[user.id];
+    members[guildId] = member ? { ...byUser, [user.id]: { ...member, user } } : byUser;
+  }
+  const messages: ChatState["messages"] = {};
+  for (const [channelId, bucket] of Object.entries(state.messages)) {
+    let changed = false;
+    const items = bucket.items.map((message) => {
+      const author = message.author.id === user.id ? user : message.author;
+      const replyTo = message.replyTo?.author?.id === user.id ? { ...message.replyTo, author: user } : message.replyTo;
+      if (author === message.author && replyTo === message.replyTo) return message;
+      changed = true;
+      return { ...message, author, replyTo };
+    });
+    messages[channelId] = changed ? { ...bucket, items } : bucket;
+  }
+  return { ...state, me: state.me?.id === user.id ? user : state.me, members, messages };
+}
+
 function withChannel(state: ChatState, channel: Channel): ChatState {
   const guild = state.guilds[channel.guildId];
   if (!guild) return state;
@@ -226,6 +248,8 @@ function applyDispatch(state: ChatState, event: DispatchEvent, now: number): Cha
       const channelTyping = { ...state.typing[event.d.channelId], [event.d.userId]: now + TYPING_TTL_MS };
       return { ...state, typing: { ...state.typing, [event.d.channelId]: channelTyping } };
     }
+    case "USER_UPDATE":
+      return withUser(state, event.d);
     case "VOICE_STATE_UPDATE": {
       const { guildId, userId, channelId, muted, deafened, streaming } = event.d;
       const guildVoice = { ...state.voice[guildId] };

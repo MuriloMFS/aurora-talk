@@ -1,7 +1,7 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { isWebUrl, type PlatformPort, type SystemAudioCapture, type UpdateInfo, type UpdateProgress } from "./index";
+import { isWebUrl, type DesktopSettings, type PlatformPort, type SystemAudioCapture, type UpdateInfo, type UpdateProgress } from "./index";
 import { BADGE_SIZE, drawBadge } from "./badge";
 import { pcmChunkToAudioDataInit } from "./system-audio";
 
@@ -81,6 +81,17 @@ export function createTauriPlatform(): PlatformPort {
     },
     async requestAttention() {
       await invoke("request_attention");
+    },
+    // Rust em apps/desktop/src-tauri/src/desktop_settings.rs (registro do Windows + arquivo do app).
+    getDesktopSettings() {
+      return invoke<DesktopSettings>("get_desktop_settings");
+    },
+    async setDesktopSettings(settings) {
+      try {
+        return await invoke<DesktopSettings>("set_desktop_settings", { settings });
+      } catch (error) {
+        throw new Error(typeof error === "string" ? error : "Não foi possível salvar as opções do Windows.");
+      }
     },
   };
 }

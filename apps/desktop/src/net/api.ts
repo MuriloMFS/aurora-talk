@@ -93,4 +93,11 @@ export class ApiClient {
   deleteMessage(messageId: Id) {
     return this.request<void>("DELETE", `/api/messages/${messageId}`);
   }
+  updateProfile(displayName: string) {
+    return this.request<User>("PATCH", "/api/users/@me", { displayName });
+  }
+  /** Troca a senha; as sessões dos outros aparelhos são encerradas (esta continua). */
+  changePassword(currentPassword: string, newPassword: string) {
+    return this.request<void>("POST", "/api/users/@me/password", { currentPassword, newPassword });
+  }
 }

@@ -144,6 +144,20 @@ describe("chatReducer", () => {
     expect(state.messages["20"]!.items[0]!.reactions).toEqual([{ emoji: "👍", userIds: ["1", "2"] }]);
   });
 
+  it("nome de exibição novo vale na hora: membros, mensagens, respostas e eu mesmo", () => {
+    const reply: Message = { ...msg("101", ana), replyTo: { id: "100", author: bia, content: "100" } };
+    let state = chatReducer(ready(), { type: "history", channelId: "20", messages: [msg("100", bia), reply], mode: "latest", pageSize: 50 });
+    const renamed: User = { ...bia, displayName: "Bia Souza" };
+    state = chatReducer(state, { type: "dispatch", event: { t: "USER_UPDATE", d: renamed }, now: 0 });
+    expect(state.members["10"]?.["2"]?.user.displayName).toBe("Bia Souza");
+    expect(state.messages["20"]?.items[0]?.author.displayName).toBe("Bia Souza");
+    expect(state.messages["20"]?.items[1]?.replyTo?.author?.displayName).toBe("Bia Souza");
+    expect(state.messages["20"]?.items[1]?.author).toBe(ana); // mensagem de outra pessoa intacta
+
+    state = chatReducer(state, { type: "dispatch", event: { t: "USER_UPDATE", d: { ...ana, displayName: "Ana Clara" } }, now: 0 });
+    expect(state.me?.displayName).toBe("Ana Clara");
+  });
+
   it("evento desconhecido (servidor mais novo) não quebra o estado", () => {
     const state = ready();
     expect(chatReducer(state, { type: "dispatch", event: { t: "ALGO_NOVO", d: {} } as never, now: 0 })).toBe(state);

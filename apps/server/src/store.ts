@@ -176,6 +176,29 @@ export class Store {
     this.run("DELETE FROM sessions WHERE token_hash = ?", tokenHash);
   }
 
+  /* ---------- conta ---------- */
+
+  updateDisplayName(userId: Id, displayName: string): User | undefined {
+    this.run("UPDATE users SET display_name = ? WHERE id = ?", displayName, Number(userId));
+    const row = this.one<UserRow>("SELECT id, username, display_name FROM users WHERE id = ?", Number(userId));
+    return row ? toUser(row) : undefined;
+  }
+
+  passwordHashOf(userId: Id): string | undefined {
+    return this.one<{ password_hash: string }>("SELECT password_hash FROM users WHERE id = ?", Number(userId))?.password_hash;
+  }
+
+  updatePassword(userId: Id, passwordHash: string): void {
+    this.run("UPDATE users SET password_hash = ? WHERE id = ?", passwordHash, Number(userId));
+  }
+
+  /** Encerra as outras sessões do usuário (troca de senha) e devolve os hashes encerrados. */
+  deleteOtherSessions(userId: Id, keepTokenHash: string): string[] {
+    const others = this.all<{ token_hash: string }>("SELECT token_hash FROM sessions WHERE user_id = ? AND token_hash <> ?", Number(userId), keepTokenHash).map((r) => r.token_hash);
+    this.run("DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?", Number(userId), keepTokenHash);
+    return others;
+  }
+
   /* ---------- servidores, membros e canais ---------- */
 
   createGuild(name: string, ownerId: Id, live: LiveState): Guild {

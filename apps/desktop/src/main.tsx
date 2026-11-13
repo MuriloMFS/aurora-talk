@@ -6,6 +6,7 @@ import "@aurora/ui/tokens.css";
 import "./app.css";
 import "./ui.css";
 import "./conversation.css";
+import "./settings.css";
 import { App } from "./App";
 
 const root = document.getElementById("root");

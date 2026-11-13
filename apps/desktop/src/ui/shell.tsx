@@ -5,30 +5,22 @@ import {
   Hash,
   HeadphoneOff,
   Headphones,
-  LogOut,
   Mic,
   MicOff,
-  Monitor,
-  Moon,
   PhoneOff,
   Plus,
   ScreenShare,
   ScreenShareOff,
-  Sun,
+  Settings,
   UserPlus,
   Volume2,
-  type LucideIcon,
 } from "lucide-react";
 import type { Channel, ChannelType, Id, Member, User, VoiceState } from "@aurora/schema";
-import type { ThemePreference } from "@aurora/ui/theme";
 import type { GuildEntry } from "../state/chat-store";
 import { avatarIndex, initials } from "../messages";
 
 export const ICON = { size: 20, strokeWidth: 1.75, "aria-hidden": true } as const;
 export const ICON_SM = { size: 16, strokeWidth: 1.75, "aria-hidden": true } as const;
-
-const THEME_LABEL: Record<ThemePreference, string> = { dark: "escuro", light: "claro", system: "seguir o sistema" };
-const THEME_ICON: Record<ThemePreference, LucideIcon> = { dark: Moon, light: Sun, system: Monitor };
 
 export function Avatar({ user, size = "md", online, speaking }: { user: User; size?: "sm" | "md" | "lg"; online?: boolean; speaking?: boolean }) {
   return (
@@ -126,7 +118,6 @@ interface SidebarProps {
   me: User;
   online: boolean;
   statusText: string;
-  themePreference: ThemePreference;
   membersById: Readonly<Record<Id, Member>>;
   voiceStates: Readonly<Record<Id, VoiceState>>;
   speaking: ReadonlySet<Id>;
@@ -135,8 +126,7 @@ interface SidebarProps {
   onSelectChannel: (id: Id) => void;
   onCreateChannel: (type: ChannelType) => void;
   onInvite: () => void;
-  onCycleTheme: () => void;
-  onLogout: () => void;
+  onOpenSettings: () => void;
   onJoinVoice: (channelId: Id) => void;
   onLeaveVoice: () => void;
   onToggleMute: () => void;
@@ -370,8 +360,7 @@ function VoicePanel({
   );
 }
 
-function UserPanel({ me, online, statusText, themePreference, onCycleTheme, onLogout }: SidebarProps) {
-  const ThemeIcon = THEME_ICON[themePreference];
+function UserPanel({ me, online, statusText, onOpenSettings }: SidebarProps) {
   return (
     <footer className="userpanel">
       <Avatar user={me} online={online} />
@@ -382,17 +371,8 @@ function UserPanel({ me, online, statusText, themePreference, onCycleTheme, onLo
         <span className="userpanel__status">{statusText}</span>
       </div>
       <div className="userpanel__actions">
-        <button
-          type="button"
-          className="icon-button"
-          aria-label={`Tema: ${THEME_LABEL[themePreference]}. Alternar tema`}
-          title={`Tema: ${THEME_LABEL[themePreference]}`}
-          onClick={onCycleTheme}
-        >
-          <ThemeIcon {...ICON} />
-        </button>
-        <button type="button" className="icon-button" aria-label="Sair da conta" title="Sair da conta" onClick={onLogout}>
-          <LogOut {...ICON} />
+        <button type="button" className="icon-button" aria-label="Configurações (Ctrl+,)" title="Configurações" onClick={onOpenSettings}>
+          <Settings {...ICON} />
         </button>
       </div>
     </footer>

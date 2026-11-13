@@ -21,6 +21,8 @@ O REA é um CLI/MCP de engenharia reversa **local**. Aqui ele foi usado só para
 - `.node`/DLLs nativos **não** foram analisados; as funções deles vêm dos wrappers JS e nomes de arquivo.
 - Cópia extraída temporária do `core.asar` foi apagada; nada do código/assets do Discord foi guardado neste projeto.
 
+> **Atualização 2026-11-13:** inventário das configurações e dos sons de feedback (Discord 1.0.9268) em [08-configuracoes.md](08-configuracoes.md).
+
 ## 2. Achados por camada
 
 ### 2.1 Shell desktop (observado)

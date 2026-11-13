@@ -1,4 +1,6 @@
-import { AudioPresets, ConnectionState, Room, RoomEvent, Track, type RemoteTrack } from "livekit-client";
+import { AudioPresets, ConnectionState, Room, RoomEvent, Track, type AudioCaptureOptions, type LocalAudioTrack, type RemoteTrack } from "livekit-client";
+import { DEFAULT_VOICE_SETTINGS, captureConstraints, type VoiceSettings } from "./audio";
+import { MicrophoneGain } from "./gain-processor";
 import type { MediaCredentials, MediaEngine, MediaEngineEvents, PlatformInfo, PlatformPort, ScreenShare, SystemAudioCapture, VoiceConnectionState } from "./index";
 import { rtcConfigFor } from "./ice";
 import { SCREEN_SHARE_PROFILES, canExcludeOwnAudio, displayMediaOptions, type ScreenShareOptions, type ScreenShareResult } from "./screen-share";
@@ -17,6 +19,9 @@ function toState(state: ConnectionState): VoiceConnectionState {
 }
 
 type VideoTrack = Pick<RemoteTrack, "attach" | "detach">;
+
+/** Configurações da pessoa no formato de captura do LiveKit. */
+const captureOptions = (voice: VoiceSettings): AudioCaptureOptions => captureConstraints(voice) as AudioCaptureOptions;
 
 
 function shareOf(identity: string, local: boolean, track: VideoTrack): ScreenShare {
@@ -40,6 +45,8 @@ export class LiveKitMediaEngine implements MediaEngine {
   private readonly remoteShares = new Map<string, VideoTrack>();
   /** Som do computador capturado pelo app (transmissão em andamento). */
   private systemAudio: SystemAudioCapture | null = null;
+  /** Dispositivos, volumes e processamento escolhidos nas configurações. */
+  private voice: VoiceSettings = DEFAULT_VOICE_SETTINGS;
 
   private readonly platform: PlatformPort;
   private readonly info: PlatformInfo;
@@ -49,13 +56,15 @@ export class LiveKitMediaEngine implements MediaEngine {
     this.info = info;
   }
 
-  async join(credentials: MediaCredentials, events: MediaEngineEvents, options: { muted: boolean; deafened: boolean }): Promise<void> {
+  async join(credentials: MediaCredentials, events: MediaEngineEvents, options: { muted: boolean; deafened: boolean; voice?: VoiceSettings }): Promise<void> {
     await this.leave();
+    if (options.voice) this.voice = options.voice;
     const room = new Room({
       adaptiveStream: true,
       dynacast: true,
-      // cancelamento de eco, supressão de ruído e ganho automático do próprio navegador
-      audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      // microfone, cancelamento de eco, supressão de ruído e ganho automático conforme as configurações
+      audioCaptureDefaults: captureOptions(this.voice),
+      audioOutput: { deviceId: this.voice.outputDeviceId },
     });
     this.room = room;
     this.events = events;
@@ -84,7 +93,44 @@ export class LiveKitMediaEngine implements MediaEngine {
     const rtcConfig = rtcConfigFor(credentials);
     await room.connect(credentials.url, credentials.token, rtcConfig && { rtcConfig });
     await room.localParticipant.setMicrophoneEnabled(!options.muted && !options.deafened);
+    await this.applyMicrophoneVolume();
     events.onStateChange("connected");
+  }
+
+  async applyVoiceSettings(next: VoiceSettings): Promise<void> {
+    const previous = this.voice;
+    this.voice = next;
+    const room = this.room;
+    if (!room) return;
+    room.options.audioCaptureDefaults = captureOptions(next);
+    const captureChanged =
+      previous.inputDeviceId !== next.inputDeviceId ||
+      previous.echoCancellation !== next.echoCancellation ||
+      previous.noiseSuppression !== next.noiseSuppression ||
+      previous.autoGainControl !== next.autoGainControl;
+    const microphone = this.microphone();
+    if (captureChanged && microphone) await microphone.restartTrack(captureOptions(next));
+    if (previous.outputDeviceId !== next.outputDeviceId) await room.switchActiveDevice("audiooutput", next.outputDeviceId);
+    for (const element of this.audioElements) element.volume = next.outputVolume / 100;
+    await this.applyMicrophoneVolume();
+  }
+
+  private microphone(): LocalAudioTrack | undefined {
+    return this.room?.localParticipant.getTrackPublication(Track.Source.Microphone)?.track as LocalAudioTrack | undefined;
+  }
+
+  /** 100% = trilha original; diferente disso, passa pelo ganho antes de ir para a sala. */
+  private async applyMicrophoneVolume(): Promise<void> {
+    const microphone = this.microphone();
+    if (!microphone) return;
+    const factor = this.voice.inputVolume / 100;
+    const current = microphone.getProcessor();
+    if (current instanceof MicrophoneGain) {
+      if (factor === 1) await microphone.stopProcessor();
+      else current.setValue(factor);
+      return;
+    }
+    if (factor !== 1) await microphone.setProcessor(new MicrophoneGain(factor));
   }
 
   async leave(): Promise<void> {
@@ -104,6 +150,7 @@ export class LiveKitMediaEngine implements MediaEngine {
 
   async setMuted(muted: boolean): Promise<void> {
     await this.room?.localParticipant.setMicrophoneEnabled(!muted);
+    if (!muted) await this.applyMicrophoneVolume(); // o microfone pode ter nascido agora
   }
 
   setDeafened(deafened: boolean): void {
@@ -216,6 +263,7 @@ export class LiveKitMediaEngine implements MediaEngine {
   private attachAudio(track: RemoteTrack): void {
     const element = track.attach();
     element.muted = this.deafened;
+    element.volume = this.voice.outputVolume / 100;
     element.hidden = true;
     element.dataset.auroraVoice = "remote-audio";
     document.body.appendChild(element);

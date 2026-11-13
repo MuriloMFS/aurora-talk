@@ -20,13 +20,13 @@ const SURFACES: { value: ScreenShareSurface; title: string; hint: string; Icon: 
   { value: "window", title: "Uma janela", hint: "Só um app, como um jogo ou o navegador", Icon: AppWindow },
 ];
 
-const QUALITIES: { value: ScreenShareQuality; title: string; hint: string }[] = [
+export const QUALITIES: { value: ScreenShareQuality; title: string; hint: string }[] = [
   { value: "light", title: "Leve", hint: "Para internet mais fraca" },
   { value: "standard", title: "Padrão", hint: "Texto nítido. Recomendado" },
   { value: "smooth", title: "Fluida", hint: "Jogos e vídeos. Usa mais rede" },
 ];
 
-const spec = (quality: ScreenShareQuality) => {
+export const spec = (quality: ScreenShareQuality) => {
   const profile = SCREEN_SHARE_PROFILES[quality];
   return `${profile.height}p · ${profile.frameRate} fps`;
 };
@@ -44,7 +44,7 @@ export function loadScreenShareOptions(): ScreenShareOptions {
   }
 }
 
-function saveScreenShareOptions(options: ScreenShareOptions): void {
+export function saveScreenShareOptions(options: ScreenShareOptions): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(options));
   } catch {

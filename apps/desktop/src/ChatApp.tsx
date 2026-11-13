@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { LIMITS, type Channel, type ChannelType, type DispatchEvent, type Id, type Message } from "@aurora/schema";
+import { LIMITS, type Channel, type ChannelType, type DispatchEvent, type Id, type Message, type User } from "@aurora/schema";
 import type { ThemePreference } from "@aurora/ui/theme";
 import {
   createMediaEngine,
@@ -23,6 +23,10 @@ import { CenterState, MemberList, Rail, Sidebar, type MyVoice } from "./ui/shell
 import { ScreenShareDialog } from "./ui/ScreenShareDialog";
 import { StreamStage } from "./ui/StreamStage";
 import { UpdateButton } from "./ui/update";
+import { SettingsScreen, type SettingsSectionId } from "./ui/settings/SettingsScreen";
+import { SoundPlayer, voiceEventSound, type SoundId } from "./sounds";
+import { settingsStore, useSettings, type AppSettings } from "./state/settings";
+import { voiceSettingsOf } from "./voice-settings";
 
 type Dialog = "createGuild" | "joinGuild" | "createChannel" | "invite" | "screenShare" | null;
 
@@ -32,14 +36,18 @@ const ACK_DELAY_MS = 1_000;
 const NOTIFICATION_BODY_MAX = 140;
 
 /**
- * Menção a mim fora de vista (outro canal, ou app em segundo plano): notificação do Windows e o
- * ícone pisca. Quem já está olhando o canal não é interrompido.
+ * Menção a mim fora de vista (outro canal, ou app em segundo plano): notificação do Windows, som e o
+ * ícone pisca — cada um conforme as configurações. Quem já está olhando o canal não é interrompido.
  */
-function notifyIfMentioned(state: ChatState, event: DispatchEvent, port: PlatformPort | null): void {
-  if (event.t !== "MESSAGE_CREATE" || !port || !state.me) return;
+function notifyIfMentioned(state: ChatState, event: DispatchEvent, port: PlatformPort | null, settings: AppSettings, play: (id: SoundId) => void): void {
+  if (event.t !== "MESSAGE_CREATE" || !state.me) return;
   const message = event.d;
   if (message.author.id === state.me.id || !message.mentions.includes(state.me.id)) return;
   if (state.focused && state.activeChannelId === message.channelId) return;
+  play("mention");
+  if (!port) return;
+  if (settings.notifications.flash) port.requestAttention().catch(() => undefined);
+  if (!settings.notifications.desktop) return;
   const channel = state.channels[message.channelId];
   const guild = channel ? state.guilds[channel.guildId] : undefined;
   const members = channel ? (state.members[channel.guildId] ?? {}) : {};
@@ -47,7 +55,6 @@ function notifyIfMentioned(state: ChatState, event: DispatchEvent, port: Platfor
   const body = text.length > NOTIFICATION_BODY_MAX ? `${text.slice(0, NOTIFICATION_BODY_MAX - 1)}…` : text;
   const where = channel ? ` em #${channel.name}${guild ? ` (${guild.name})` : ""}` : "";
   port.notify({ title: `${message.author.displayName}${where}`, body: body || "Mencionou você." }).catch(() => undefined);
-  port.requestAttention().catch(() => undefined);
 }
 const NO_SPEAKERS: ReadonlySet<Id> = new Set();
 
@@ -74,14 +81,15 @@ function shareNoticeFor(result: ScreenShareResult): string | null {
 interface ChatAppProps {
   session: Session;
   themePreference: ThemePreference;
-  onCycleTheme: () => void;
+  onThemeChange: (theme: ThemePreference) => void;
   onLogout: (notice: string | null) => void;
   /** Versão nova encontrada com o app aberto: vira o botão de download no topo. */
   availableUpdate: UpdateInfo | null;
+  onCheckUpdate: () => Promise<"available" | "current" | "unsupported" | "error">;
   onInstallUpdate: () => void;
 }
 
-export function ChatApp({ session, themePreference, onCycleTheme, onLogout, availableUpdate, onInstallUpdate }: ChatAppProps) {
+export function ChatApp({ session, themePreference, onThemeChange, onLogout, availableUpdate, onCheckUpdate, onInstallUpdate }: ChatAppProps) {
   const api = useMemo(() => new ApiClient(session.serverUrl, session.token), [session]);
   const store = useMemo(() => createChatStore(), []);
   const state = useChatState(store);
@@ -97,6 +105,16 @@ export function ChatApp({ session, themePreference, onCycleTheme, onLogout, avai
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [screenShares, setScreenShares] = useState<ScreenShare[]>([]);
   const [stageOpen, setStageOpen] = useState(false);
+
+  // ---- configurações e sons de feedback ----
+  const settings = useSettings();
+  const sounds = useMemo(() => new SoundPlayer(), []);
+  useEffect(() => sounds.setVolume(settings.sounds.volume / 100), [sounds, settings.sounds.volume]);
+  useEffect(() => void sounds.setOutputDevice(settings.voice.outputDeviceId), [sounds, settings.voice.outputDeviceId]);
+  /** Toca se a pessoa deixou esse som ligado (lê na hora: serve dentro de callbacks antigos). */
+  const playSound = useCallback((id: SoundId) => settingsStore.get().sounds.enabled[id] && sounds.play(id), [sounds]);
+  const [settingsOpen, setSettingsOpen] = useState<SettingsSectionId | null>(null);
+  const closeSettings = useCallback(() => setSettingsOpen(null), []);
 
   // ---- plataforma (notificações, selo, links) ----
   const portRef = useRef<PlatformPort | null>(null);
@@ -133,9 +151,17 @@ export function ChatApp({ session, themePreference, onCycleTheme, onLogout, avai
         }
       },
       onDispatch: (event) => {
+        const before = store.getState();
         store.dispatch({ type: "dispatch", event, now: Date.now() });
         if (event.t === "READ_STATE_UPDATE") ackedRef.current.set(event.d.channelId, event.d.lastReadId);
-        notifyIfMentioned(store.getState(), event, portRef.current);
+        // alguém entrou/saiu da minha sala ou começou/parou de transmitir
+        const mine = voiceRef.current;
+        if (event.t === "VOICE_STATE_UPDATE" && mine && mine.status !== "connecting" && before.me) {
+          const previous = before.voice[event.d.guildId]?.[event.d.userId];
+          const sound = voiceEventSound(previous, event.d, before.me.id, mine.guildId === event.d.guildId ? mine.channelId : null);
+          if (sound) playSound(sound);
+        }
+        notifyIfMentioned(store.getState(), event, portRef.current, settingsStore.get(), playSound);
       },
       onInvalidSession: () => onLogout("Sua sessão expirou. Entre novamente."),
     });
@@ -145,7 +171,7 @@ export function ChatApp({ session, themePreference, onCycleTheme, onLogout, avai
       gateway.stop();
       gatewayRef.current = null;
     };
-  }, [session, store, onLogout]);
+  }, [session, store, onLogout, playSound]);
 
   // Saiu da conta / fechou: desliga a voz.
   useEffect(() => () => void engineRef.current?.leave(), []);
@@ -197,9 +223,10 @@ export function ChatApp({ session, themePreference, onCycleTheme, onLogout, avai
 
   // ---- selo de menções na barra de tarefas ----
   const totalMentions = Object.keys(state.reads).reduce((sum, id) => sum + mentionCountOf(state, id), 0);
+  const badgeOn = settings.notifications.badge;
   useEffect(() => {
-    portRef.current?.setBadge(totalMentions).catch(() => undefined);
-  }, [totalMentions, platform]);
+    portRef.current?.setBadge(badgeOn ? totalMentions : 0).catch(() => undefined);
+  }, [totalMentions, platform, badgeOn]);
 
   // ---- avisos rápidos do chat (ex.: reação recusada) ----
   const [chatNotice, setChatNotice] = useState<string | null>(null);
@@ -262,13 +289,14 @@ export function ChatApp({ session, themePreference, onCycleTheme, onLogout, avai
   // ---- ações de voz ----
   const leaveVoice = useCallback(async () => {
     const engine = engineRef.current;
+    if (voiceRef.current) playSound("voiceDisconnect");
     setVoice(null);
     setSpeaking(NO_SPEAKERS);
     setScreenShares([]);
     setStageOpen(false);
     gatewayRef.current?.sendVoiceLeave();
     await engine?.leave();
-  }, []);
+  }, [playSound]);
 
   const joinVoice = useCallback(
     async (voiceChannelId: Id, voiceGuildId: Id) => {
@@ -292,10 +320,11 @@ export function ChatApp({ session, themePreference, onCycleTheme, onLogout, avai
             onSpeakingChange: setSpeaking,
             onScreenSharesChange: setScreenShares,
           },
-          { muted: false, deafened: false },
+          { muted: false, deafened: false, voice: voiceSettingsOf(settingsStore.get().voice) },
         );
         if (voiceRef.current?.channelId !== voiceChannelId) return; // saiu enquanto conectava
         gatewayRef.current?.sendVoiceJoin(voiceChannelId, false, false);
+        playSound("voiceConnect");
         setVoice((current) => (current && current.channelId === voiceChannelId ? { ...current, status: "connected" } : current));
       } catch (error) {
         await engineRef.current?.leave();
@@ -303,12 +332,24 @@ export function ChatApp({ session, themePreference, onCycleTheme, onLogout, avai
         setVoiceError(voiceErrorMessage(error));
       }
     },
-    [api, leaveVoice],
+    [api, leaveVoice, playSound],
   );
+
+  // Microfone, alto-falante, volumes e tratamento mudados nas configurações valem na hora, na chamada.
+  const voiceSettingsKey = JSON.stringify(voiceSettingsOf(settings.voice));
+  useEffect(() => {
+    if (!voiceRef.current || !engineRef.current) return;
+    engineRef.current.applyVoiceSettings(voiceSettingsOf(settingsStore.get().voice)).catch((error: unknown) => {
+      console.error("[aurora] trocar o áudio falhou", error);
+      setVoiceError("Não foi possível usar o dispositivo de áudio escolhido. Confira se ele está conectado ou escolha outro nas configurações.");
+    });
+  }, [voiceSettingsKey]);
 
   const updateVoiceFlags = async (muted: boolean, deafened: boolean) => {
     const current = voiceRef.current;
     if (!current) return;
+    if (deafened !== current.deafened) playSound(deafened ? "deafen" : "undeafen");
+    else if (muted !== current.muted) playSound(muted ? "mute" : "unmute");
     setVoice({ ...current, muted, deafened });
     engineRef.current?.setDeafened(deafened);
     gatewayRef.current?.sendVoiceState(muted, deafened, current.streaming);
@@ -323,11 +364,12 @@ export function ChatApp({ session, themePreference, onCycleTheme, onLogout, avai
   useEffect(() => {
     const current = voiceRef.current;
     if (!current || current.streaming === localSharing) return;
+    playSound(localSharing ? "streamStart" : "streamStop");
     const next = { ...current, streaming: localSharing };
     voiceRef.current = next;
     setVoice(next);
     gatewayRef.current?.sendVoiceState(next.muted, next.deafened, localSharing);
-  }, [localSharing]);
+  }, [localSharing, playSound]);
 
   // Compartilhar abre o nosso diálogo (o que mostrar + qualidade); parar é direto.
   const [shareNotice, setShareNotice] = useState<string | null>(null);
@@ -359,6 +401,31 @@ export function ChatApp({ session, themePreference, onCycleTheme, onLogout, avai
   // Ensurdecer também desliga o microfone; ligar o microfone tira o ensurdecer.
   const toggleMute = () => voiceRef.current && void updateVoiceFlags(!voiceRef.current.muted, voiceRef.current.muted ? false : voiceRef.current.deafened);
   const toggleDeafen = () => voiceRef.current && void updateVoiceFlags(!voiceRef.current.deafened, !voiceRef.current.deafened);
+
+  // ---- atalhos de teclado (Configurações → Atalhos de teclado) ----
+  const shortcutsRef = useRef({ toggleMute, toggleDeafen });
+  shortcutsRef.current = { toggleMute, toggleDeafen };
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      if (event.key === "," && !event.shiftKey) {
+        event.preventDefault();
+        setSettingsOpen((open) => open ?? "account");
+        return;
+      }
+      if (!event.shiftKey) return;
+      const key = event.key.toLowerCase();
+      if (key === "m") {
+        event.preventDefault();
+        shortcutsRef.current.toggleMute();
+      } else if (key === "d") {
+        event.preventDefault();
+        shortcutsRef.current.toggleDeafen();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
 
   // ---- layout ----
   const [membersOpen, setMembersOpen] = useState(() => globalThis.matchMedia?.(WIDE_LAYOUT).matches ?? true);
@@ -455,7 +522,6 @@ export function ChatApp({ session, themePreference, onCycleTheme, onLogout, avai
             me={me}
             online={state.status === "ready"}
             statusText={statusText}
-            themePreference={themePreference}
             membersById={membersById}
             voiceStates={state.voice[guild.id] ?? {}}
             speaking={speaking}
@@ -467,8 +533,7 @@ export function ChatApp({ session, themePreference, onCycleTheme, onLogout, avai
               setDialog("createChannel");
             }}
             onInvite={() => setDialog("invite")}
-            onCycleTheme={onCycleTheme}
-            onLogout={logout}
+            onOpenSettings={() => setSettingsOpen("account")}
             onJoinVoice={(id) => void joinVoice(id, guild.id)}
             onLeaveVoice={() => void leaveVoice()}
             onToggleMute={toggleMute}
@@ -549,8 +614,8 @@ export function ChatApp({ session, themePreference, onCycleTheme, onLogout, avai
             <button type="button" className="button button--secondary" onClick={() => setDialog("joinGuild")}>
               Entrar com convite
             </button>
-            <button type="button" className="button button--ghost" onClick={logout}>
-              Sair da conta
+            <button type="button" className="button button--ghost" onClick={() => setSettingsOpen("account")}>
+              Configurações
             </button>
           </CenterState>
         </main>
@@ -591,6 +656,28 @@ export function ChatApp({ session, themePreference, onCycleTheme, onLogout, avai
         />
       )}
       {dialog === "invite" && guild && <InviteDialog api={api} guild={guild} onClose={closeDialog} />}
+      {settingsOpen && (
+        <SettingsScreen
+          initialSection={settingsOpen}
+          me={me}
+          api={api}
+          serverUrl={session.serverUrl}
+          port={portRef.current}
+          platform={platform}
+          sounds={sounds}
+          theme={themePreference}
+          onThemeChange={onThemeChange}
+          onUserUpdated={(user: User) => store.dispatch({ type: "dispatch", event: { t: "USER_UPDATE", d: user }, now: Date.now() })}
+          availableUpdate={availableUpdate}
+          onCheckUpdate={onCheckUpdate}
+          onInstallUpdate={onInstallUpdate}
+          onLogout={() => {
+            setSettingsOpen(null);
+            void logout();
+          }}
+          onClose={closeSettings}
+        />
+      )}
       {dialog === "screenShare" && voice && (
         <ScreenShareDialog
           systemAudioMode={platform?.systemAudio ?? "picker"}

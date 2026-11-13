@@ -29,7 +29,7 @@ import { registerSiteRoutes } from "./site.ts";
 import type { IceServerSource } from "./turn.ts";
 import { registerUpdateRoutes } from "./updates.ts";
 
-export const SERVER_VERSION = "1.3.2";
+export const SERVER_VERSION = "1.4.0";
 
 export class HttpError extends Error {
   readonly status: number;
@@ -64,6 +64,13 @@ const registerBody = z.object({
   displayName: z.string().trim().min(1).max(LIMITS.displayNameMax, `O nome de exibição pode ter no máximo ${LIMITS.displayNameMax} caracteres.`).optional(),
   password: passwordField,
 });
+const displayNameField = z
+  .string()
+  .trim()
+  .min(1, "Informe um nome de exibição.")
+  .max(LIMITS.displayNameMax, `O nome de exibição pode ter no máximo ${LIMITS.displayNameMax} caracteres.`);
+const profileBody = z.object({ displayName: displayNameField });
+const passwordBody = z.object({ currentPassword: z.string().min(1, "Informe a senha atual."), newPassword: passwordField });
 const loginBody = z.object({
   username: z.string().trim().toLowerCase().min(1, "Informe o usuário."),
   password: z.string().min(1, "Informe a senha."),
@@ -237,6 +244,30 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
   });
 
   app.get("/api/users/@me", async (request) => authenticate(request).user);
+
+  // Nome de exibição: vale na hora para quem divide servidor comigo e para as minhas outras abas/aparelhos.
+  app.patch("/api/users/@me", async (request) => {
+    const { user } = authenticate(request);
+    const body = profileBody.parse(request.body);
+    const updated = store.updateDisplayName(user.id, body.displayName);
+    if (!updated) throw new HttpError(404, "not_found", "Conta não encontrada.");
+    if (updated.displayName !== user.displayName) gateway.dispatchToUsers([user.id, ...store.peersOf(user.id)], { t: "USER_UPDATE", d: updated });
+    return updated;
+  });
+
+  // Troca de senha: confere a atual e encerra as sessões dos outros aparelhos (esta continua).
+  app.post("/api/users/@me/password", async (request, reply) => {
+    const { user, tokenHash } = authenticate(request);
+    limit(authLimiter, `password:${user.id}`);
+    const body = passwordBody.parse(request.body);
+    const currentHash = store.passwordHashOf(user.id);
+    if (!currentHash || !(await verifyPassword(body.currentPassword, currentHash))) {
+      throw new HttpError(400, "invalid_password", "A senha atual está errada. Confira e tente de novo.");
+    }
+    store.updatePassword(user.id, await hashPassword(body.newPassword));
+    for (const other of store.deleteOtherSessions(user.id, tokenHash)) gateway.closeSession(other);
+    return reply.status(204).send();
+  });
 
   app.post("/api/guilds", async (request, reply) => {
     const { user } = authenticate(request);

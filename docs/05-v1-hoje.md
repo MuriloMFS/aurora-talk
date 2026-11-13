@@ -92,6 +92,11 @@
   - O app passa os servidores ao LiveKit (`packages/platform/src/ice.ts`). O WebRTC escolhe sozinho: direto na rede de casa, pelo retransmissor de fora.
   - Se a Cloudflare falhar, a voz segue só com conexão direta. `GET /api/health` mostra `voiceRelay`.
   - Medido só pelo retransmissor: tela 1080p e voz sem perda, ida e volta de 7 a 10 ms (`docs/spikes/medicao-voz-retransmissor.md`).
+- **1.4.0** — **configurações e sons de feedback** (detalhes em `docs/08-configuracoes.md`):
+  - Tela de configurações em tela cheia (engrenagem no painel do usuário ou Ctrl+,): Minha conta, Voz e vídeo, Sons, Notificações, Aparência, Acessibilidade, Atalhos de teclado, Idioma, Windows e Avançado.
+  - Sons próprios (sintetizados, sem arquivos) ao entrar e sair da voz, quando alguém entra ou sai da sala, ao mutar, ensurdecer, transmitir e ao ser mencionado.
+  - Bandeja do Windows, fechar para a bandeja, abrir com o Windows e iniciar minimizado.
+  - Servidor: mudar o nome de exibição (ao vivo, `USER_UPDATE`) e trocar a senha.
 
 ## O que fica para depois (ordem sugerida)
 escolha de microfone/fone · DMs e amigos · anexos e prévia de links · cargos e permissões (pacote `permissions` do doc 03) · lista virtualizada para canais grandes · servidor hospedado (VPS) com HTTPS · depois, o restante do roadmap.

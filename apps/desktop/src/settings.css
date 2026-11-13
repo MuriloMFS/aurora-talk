@@ -1,0 +1,457 @@
+/* Configurações (tela cheia) e preferências globais de aparência. SOMENTE tokens — docs/design/guia-visual.md. */
+
+/* ---------- preferências aplicadas no <html> (state/settings.ts → App.tsx) ---------- */
+:root {
+  --chat-font-size: var(--text-base);
+  --chat-line-height: var(--leading-base);
+}
+.message__content {
+  font-size: var(--chat-font-size);
+  line-height: var(--chat-line-height);
+}
+/* compacta: sem fotos, menos espaço entre grupos (a coluna da foto fica com largura zero) */
+:root[data-density="compact"] .message {
+  grid-template-columns: 0 minmax(0, 1fr);
+  column-gap: 0;
+}
+:root[data-density="compact"] .message__gutter {
+  visibility: hidden;
+  overflow: hidden;
+}
+:root[data-density="compact"] .message--group-start {
+  margin-top: var(--space-3);
+  padding-top: 0;
+}
+/* "sempre reduzir movimento", além do que o Windows pedir (@media prefers-reduced-motion) */
+:root[data-motion="reduce"] *,
+:root[data-motion="reduce"] *::before,
+:root[data-motion="reduce"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+/* contornos reforçados: divisores usam o contorno de controle (>= 3:1) nos dois temas */
+:root[data-strong-borders][data-theme] {
+  --border: var(--border-strong);
+}
+
+/* ---------- tela de configurações ---------- */
+.settings {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: grid;
+  grid-template-columns: minmax(var(--sidebar-width), 1fr) minmax(0, 2.4fr);
+  background: var(--bg-chat);
+  color: var(--text-primary);
+}
+.settings__nav {
+  display: flex;
+  justify-content: flex-end;
+  overflow-y: auto;
+  background: var(--bg-sidebar);
+}
+.settings__nav-inner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  width: var(--sidebar-width);
+  padding: var(--space-9) var(--space-3) var(--space-7);
+}
+.settings__nav-heading {
+  margin: 0 0 var(--space-2);
+  padding: 0 var(--space-3);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+.settings__nav ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.settings__nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: var(--item-height);
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  font-weight: var(--weight-medium);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-standard);
+}
+.settings__nav-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.settings__nav-item[aria-current="page"] {
+  background: var(--bg-selected);
+  color: var(--text-primary);
+  box-shadow: inset var(--indicator-width) 0 0 var(--accent);
+}
+.settings__nav-item--danger,
+.settings__nav-item--danger:hover {
+  color: var(--danger);
+}
+.settings__nav-item:focus-visible {
+  outline: var(--ring-width) solid var(--focus-ring);
+  outline-offset: calc(-1 * var(--ring-width));
+}
+.settings__version {
+  margin: 0;
+  padding: 0 var(--space-3);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  font-variant-numeric: tabular-nums;
+}
+.settings__content {
+  overflow-y: auto;
+}
+.settings__inner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-7);
+  max-width: var(--settings-content-max);
+  padding: var(--space-9) var(--space-8) var(--space-10);
+}
+.settings__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-5);
+}
+.settings__title {
+  margin: 0;
+  font-size: var(--text-2xl);
+  line-height: var(--leading-2xl);
+  font-weight: var(--weight-semibold);
+}
+.settings__close {
+  flex: none;
+  border: var(--border-width) solid var(--border-strong);
+  border-radius: var(--radius-full);
+}
+
+/* ---------- blocos ---------- */
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding-top: var(--space-7);
+  border-top: var(--border-width) solid var(--border);
+}
+.settings__header + .settings-group {
+  padding-top: 0;
+  border-top: 0;
+}
+.settings-group__title {
+  margin: 0;
+  font-size: var(--text-lg);
+  line-height: var(--leading-lg);
+  font-weight: var(--weight-semibold);
+}
+.settings-group__description {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.settings-group__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.settings-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-5);
+}
+
+/* interruptor em linha (o rótulo inteiro alterna; a ação à direita fica fora do rótulo) */
+.settings-switch {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.settings-switch__label {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  /* --bg-hover aparece sobre o fundo nos dois temas (o --bg-elevated do claro é branco como o fundo) */
+  background: var(--bg-hover);
+  cursor: pointer;
+}
+.settings-switch__label .choice__text {
+  flex: 1;
+  min-width: 0;
+}
+.settings-switch__title {
+  font-weight: var(--weight-medium);
+}
+.settings-switch--disabled .settings-switch__label {
+  cursor: not-allowed;
+}
+.settings-switch--disabled .settings-switch__title {
+  color: var(--text-muted);
+}
+.settings-switch__action {
+  flex: none;
+}
+
+/* controle deslizante: valor escrito ao lado */
+.settings-slider__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.settings-slider__value {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  font-variant-numeric: tabular-nums;
+}
+.settings-range {
+  width: 100%;
+  min-height: var(--target-min);
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.settings-range:focus-visible,
+.settings-select:focus-visible {
+  outline: var(--ring-width) solid var(--focus-ring);
+  outline-offset: var(--ring-offset);
+}
+.settings-select {
+  cursor: pointer;
+}
+.settings-radio--columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(calc(var(--space-10) * 2.5), 1fr));
+  gap: var(--space-3);
+}
+
+/* teste do microfone */
+.mic-test {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+}
+.mic-test__meter {
+  flex: 1;
+  height: var(--space-4);
+  overflow: hidden;
+  border: var(--border-width) solid var(--border-strong);
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated);
+}
+.mic-test__fill {
+  display: block;
+  height: 100%;
+  background: var(--success);
+  transition: inline-size var(--dur-fast) linear;
+}
+
+/* minha conta */
+.settings-profile {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-5);
+  overflow: hidden;
+  padding: var(--space-10) var(--space-5) var(--space-5);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+}
+/* faixa de marca: o gradiente só aparece em momentos de marca, como o cabeçalho de perfil (guia §2) */
+.settings-profile::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: var(--space-9);
+  background: var(--brand-gradient);
+}
+.settings-profile .avatar {
+  position: relative;
+  box-shadow: 0 0 0 var(--space-2) var(--bg-elevated);
+}
+.switch:disabled {
+  cursor: not-allowed;
+}
+.settings-profile__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.settings-profile__name {
+  font-size: var(--text-xl);
+  line-height: var(--leading-xl);
+  font-weight: var(--weight-semibold);
+  overflow-wrap: anywhere;
+}
+.settings-profile__username {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+.settings-inline-form {
+  display: flex;
+  gap: var(--space-3);
+}
+.settings-inline-form .input {
+  flex: 1;
+  min-width: 0;
+}
+.settings-password {
+  max-width: var(--modal-width-sm);
+}
+.settings-ok {
+  margin: 0;
+  color: var(--success);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+
+/* aparência: amostra do tamanho do texto */
+.settings-preview {
+  margin: 0;
+  padding: var(--space-4) var(--space-5);
+  border-radius: var(--radius-md);
+  background: var(--bg-hover);
+}
+
+/* avançado */
+.settings-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-2) var(--space-5);
+  margin: 0;
+}
+.settings-facts > div {
+  display: contents;
+}
+.settings-facts dt {
+  color: var(--text-secondary);
+}
+.settings-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+/* atalhos */
+.shortcuts {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+}
+.shortcuts__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-5);
+  padding: var(--space-3) 0;
+  border-bottom: var(--border-width) solid var(--border);
+}
+.shortcuts__keys {
+  order: 2;
+  flex: none;
+  white-space: nowrap;
+}
+.shortcuts__action {
+  margin: 0;
+}
+.kbd {
+  display: inline-block;
+  min-width: var(--target-min);
+  padding: 0 var(--space-2);
+  border: var(--border-width) solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-sm);
+  text-align: center;
+}
+
+/* ---------- larguras menores (guia visual §4) ---------- */
+@media (max-width: 899px) {
+  .settings {
+    grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  }
+  .settings__inner {
+    padding: var(--space-7) var(--space-5) var(--space-9);
+  }
+}
+@media (max-width: 599px) {
+  .settings {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .settings__nav {
+    justify-content: stretch;
+    max-height: 40vh;
+    border-bottom: var(--border-width) solid var(--border);
+  }
+  .settings__nav-inner {
+    width: 100%;
+    padding: var(--space-5) var(--space-3);
+  }
+  .settings-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .mic-test,
+  .settings-inline-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .shortcuts__row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .shortcuts__keys {
+    order: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings__nav-item,
+  .mic-test__fill {
+    transition: none;
+  }
+}
+@media (forced-colors: active) {
+  .settings__nav-item[aria-current="page"] {
+    outline: var(--ring-width) solid Highlight;
+  }
+  .mic-test__fill {
+    background: Highlight;
+  }
+}
