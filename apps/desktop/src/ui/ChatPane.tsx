@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode, type RefObject } from "react";
-import { ArrowDown, CornerUpRight, FaceSlightlySmilingPlus, Hash, Menu, Pencil, Reply, SendHorizontal, Trash, Users, WifiOff, X } from "lucide-react";
+import { ArrowDown, AtSign, CornerUpRight, EyeOff, FaceSlightlySmilingPlus, Hash, Menu, Pencil, Plus, Reply, SendHorizontal, Trash, Upload, Users, WifiOff, X } from "lucide-react";
 import { LIMITS, type Channel, type Id, type Member, type Message, type User } from "@aurora/schema";
 import { ApiError } from "../net/api";
 import type { ConnectionStatus } from "../net/gateway";
@@ -10,6 +10,7 @@ import { decodeMentions, encodeMentions, filterMembers, mentionQueryAt } from ".
 import { EmojiPicker } from "./EmojiPicker";
 import { MessageContent } from "./MessageContent";
 import { Avatar, ICON, ICON_SM } from "./shell";
+import { MessageAttachments, UploadQueue, useUploads, type UploadFn } from "./Attachments";
 
 const errorText = (error: unknown) => (error instanceof ApiError ? error.message : "Algo deu errado. Tente de novo.");
 const BOTTOM_THRESHOLD_PX = 64;
@@ -36,8 +37,9 @@ interface ChatPaneProps {
   onOpenDrawer: () => void;
   onRetryHistory: () => void;
   onLoadOlder: () => Promise<void>;
-  /** `content` já com as menções em `<@id>`. */
-  onSend: (content: string, replyToId: Id | null) => Promise<void>;
+  /** `content` já com as menções em `<@id>`; `attachmentIds` = anexos já enviados. */
+  onSend: (content: string, replyToId: Id | null, attachmentIds: Id[]) => Promise<void>;
+  onUpload: UploadFn;
   onEdit: (id: Id, content: string) => Promise<void>;
   onDelete: (id: Id) => Promise<void>;
   /** Liga/desliga a minha reação com `emoji`. */
@@ -49,6 +51,10 @@ interface ChatPaneProps {
   onDismissNotice: () => void;
   /** Ações extras na barra do topo (ex.: botão de atualização). */
   headerExtra?: ReactNode;
+  /** Conversa direta: título (pessoa ou grupo) em vez de "#canal". */
+  dm?: { title: string; group: boolean };
+  /** Mensagens de quem eu bloqueei ficam recolhidas. */
+  isBlocked?: (userId: Id) => boolean;
 }
 
 /** O que as mensagens precisam saber sobre pessoas e ações (evita repassar 10 props). */
@@ -66,6 +72,7 @@ interface MessageContext {
   onReply: (message: Message) => void;
   onJumpTo: (messageId: Id) => void;
   onOpenLink: (url: string) => void;
+  isBlocked: (userId: Id) => boolean;
 }
 
 export function ChatPane(props: ChatPaneProps) {
@@ -79,6 +86,11 @@ export function ChatPane(props: ChatPaneProps) {
   const [olderError, setOlderError] = useState<string | null>(null);
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [flashId, setFlashId] = useState<Id | null>(null);
+  // arrastar arquivos para o chat: o compositor recebe
+  const addFilesRef = useRef<((files: File[]) => void) | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const dragDepth = useRef(0);
+  const hasFiles = (event: React.DragEvent) => event.dataTransfer.types.includes("Files");
 
   const items = bucket?.items ?? [];
   const rows = groupMessages(items);
@@ -155,6 +167,7 @@ export function ChatPane(props: ChatPaneProps) {
     onDelete: props.onDelete,
     onReact: props.onReact,
     onOpenLink: props.onOpenLink,
+    isBlocked: props.isBlocked ?? (() => false),
     onReply: (message) => {
       setReplyingTo(message);
       composerRef.current?.focus();
@@ -170,14 +183,42 @@ export function ChatPane(props: ChatPaneProps) {
   };
 
   return (
-    <main className="chat" aria-labelledby="chat-title">
+    <main
+      className="chat"
+      aria-labelledby="chat-title"
+      onDragEnter={(event) => {
+        if (!props.canSend || !hasFiles(event)) return;
+        dragDepth.current += 1;
+        setDragging(true);
+      }}
+      onDragOver={(event) => {
+        if (props.canSend && hasFiles(event)) event.preventDefault();
+      }}
+      onDragLeave={() => {
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (dragDepth.current === 0) setDragging(false);
+      }}
+      onDrop={(event) => {
+        if (!props.canSend || !hasFiles(event)) return;
+        event.preventDefault();
+        dragDepth.current = 0;
+        setDragging(false);
+        addFilesRef.current?.([...event.dataTransfer.files]);
+      }}
+    >
+      {dragging && (
+        <div className="drop-overlay" aria-hidden="true">
+          <Upload size={32} strokeWidth={1.75} />
+          <span>Solte para enviar {props.dm ? `para ${props.dm.title}` : `em #${channel.name}`}</span>
+        </div>
+      )}
       <header className="chat__header">
         <button type="button" className="icon-button chat__menu" aria-label="Abrir canais" onClick={props.onOpenDrawer}>
           <Menu {...ICON} />
         </button>
-        <Hash {...ICON} className="chat__icon" />
+        {props.dm ? (props.dm.group ? <Users {...ICON} className="chat__icon" /> : <AtSign {...ICON} className="chat__icon" />) : <Hash {...ICON} className="chat__icon" />}
         <h2 id="chat-title" className="chat__title">
-          {channel.name}
+          {props.dm ? props.dm.title : channel.name}
         </h2>
         <div className="chat__tools">
           {props.headerExtra}
@@ -246,9 +287,9 @@ export function ChatPane(props: ChatPaneProps) {
             ) : (
               <div className="empty">
                 <div className="empty__art" aria-hidden="true">
-                  <Hash size={32} strokeWidth={1.75} />
+                  {props.dm ? props.dm.group ? <Users size={32} strokeWidth={1.75} /> : <AtSign size={32} strokeWidth={1.75} /> : <Hash size={32} strokeWidth={1.75} />}
                 </div>
-                <h3 className="empty__title">Este é o começo de #{channel.name}</h3>
+                <h3 className="empty__title">{props.dm ? (props.dm.group ? `Este é o começo do grupo ${props.dm.title}` : `Este é o começo da conversa com ${props.dm.title}`) : `Este é o começo de #${channel.name}`}</h3>
                 <p className="empty__text">{items.length === 0 ? "Ainda não há mensagens aqui. Escreva a primeira." : "Não há mensagens mais antigas."}</p>
               </div>
             )}
@@ -270,11 +311,14 @@ export function ChatPane(props: ChatPaneProps) {
         <Composer
           inputRef={composerRef}
           channelName={channel.name}
+          placeTitle={props.dm ? props.dm.title : `#${channel.name}`}
           members={members}
           users={users}
           replyingTo={replyingTo}
           onCancelReply={() => setReplyingTo(null)}
           onSend={props.onSend}
+          onUpload={props.onUpload}
+          addFilesRef={addFilesRef}
           onTyping={props.onTyping}
         />
       ) : (
@@ -296,6 +340,7 @@ function MessageItem({ message, startsGroup, flash, ctx }: { message: Message; s
   const canDelete = mine || ctx.canManageMessages;
   const mentionsMe = !mine && message.mentions.includes(ctx.me.id);
   const [editing, setEditing] = useState(false);
+  const [revealed, setRevealed] = useState(false);
   const [draft, setDraft] = useState("");
   const [confirming, setConfirming] = useState(false);
   const [picking, setPicking] = useState(false);
@@ -355,6 +400,21 @@ function MessageItem({ message, startsGroup, flash, ctx }: { message: Message; s
 
   const time = formatTime(message.createdAt);
   const reply = message.replyTo;
+  if (!mine && !revealed && ctx.isBlocked(message.author.id)) {
+    return (
+      <article id={`message-${message.id}`} className="message message--blocked" aria-label="Mensagem de alguém que você bloqueou">
+        <span className="message__gutter" aria-hidden="true">
+          <EyeOff {...ICON_SM} />
+        </span>
+        <p className="message__blocked">
+          Mensagem de alguém que você bloqueou.{" "}
+          <button type="button" className="link-button" onClick={() => setRevealed(true)}>
+            Mostrar
+          </button>
+        </p>
+      </article>
+    );
+  }
   const className = ["message", startsGroup && "message--group-start", mentionsMe && "message--mention", flash && "message--flash"].filter(Boolean).join(" ");
   return (
     <article id={`message-${message.id}`} className={className} aria-label={startsGroup ? undefined : `${message.author.displayName}, ${time}`}>
@@ -370,7 +430,7 @@ function MessageItem({ message, startsGroup, flash, ctx }: { message: Message; s
           {reply.author ? (
             <>
               <span className="message__reply-author">@{reply.author.displayName}</span>
-              <span className="message__reply-text">{plainText(reply.content ?? "", (id) => ctx.nameOf(id) ?? "alguém")}</span>
+              <span className="message__reply-text">{reply.content ? plainText(reply.content, (id) => ctx.nameOf(id) ?? "alguém") : "Anexo"}</span>
             </>
           ) : (
             <span className="message__reply-text message__reply-text--deleted">Mensagem original apagada</span>
@@ -403,7 +463,7 @@ function MessageItem({ message, startsGroup, flash, ctx }: { message: Message; s
               Enter salva · Esc cancela {busy && "· salvando…"}
             </p>
           </div>
-        ) : (
+        ) : (message.content || message.editedAt) ? (
           <MessageContent
             content={message.content}
             nameOf={ctx.nameOf}
@@ -417,7 +477,8 @@ function MessageItem({ message, startsGroup, flash, ctx }: { message: Message; s
               ) : null
             }
           />
-        )}
+        ) : null}
+        {message.attachments && message.attachments.length > 0 && <MessageAttachments attachments={message.attachments} onOpenLink={ctx.onOpenLink} />}
         {message.reactions.length > 0 && (
           <div className="reactions" role="group" aria-label="Reações">
             {message.reactions.map((reaction) => {
@@ -513,23 +574,33 @@ function MessageItem({ message, startsGroup, flash, ctx }: { message: Message; s
 function Composer({
   inputRef,
   channelName,
+  placeTitle,
   members,
   users,
   replyingTo,
   onCancelReply,
   onSend,
+  onUpload,
+  addFilesRef,
   onTyping,
 }: {
   inputRef: RefObject<HTMLTextAreaElement | null>;
   channelName: string;
+  /** "#canal" ou o nome da pessoa/grupo (conversa direta). */
+  placeTitle: string;
   members: Member[];
   users: User[];
   replyingTo: Message | null;
   onCancelReply: () => void;
-  onSend: (content: string, replyToId: Id | null) => Promise<void>;
+  onSend: (content: string, replyToId: Id | null, attachmentIds: Id[]) => Promise<void>;
+  onUpload: UploadFn;
+  addFilesRef: RefObject<((files: File[]) => void) | null>;
   onTyping: () => void;
 }) {
   const [text, setText] = useState("");
+  const uploads = useUploads(onUpload);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  addFilesRef.current = uploads.add;
   const [caret, setCaret] = useState(0);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -568,12 +639,21 @@ function Composer({
   const submit = async (event?: FormEvent) => {
     event?.preventDefault();
     const typed = text.trim();
-    if (!typed || sending) return;
+    if ((!typed && uploads.readyIds.length === 0) || sending) return;
+    if (uploads.uploading) {
+      setError("Espere os arquivos terminarem de subir.");
+      return;
+    }
+    if (uploads.failed) {
+      setError("Tire da fila os arquivos com erro antes de enviar.");
+      return;
+    }
     setSending(true);
     setError(null);
     setText("");
     try {
-      await onSend(encodeMentions(typed, users), replyingTo?.id ?? null);
+      await onSend(typed ? encodeMentions(typed, users) : "", replyingTo?.id ?? null, uploads.readyIds);
+      uploads.clear();
       onCancelReply();
     } catch (caught) {
       setText(typed); // devolve o texto para não perder o que foi escrito
@@ -655,7 +735,23 @@ function Composer({
           </button>
         </div>
       )}
+      <UploadQueue items={uploads.items} notice={uploads.notice} onRemove={uploads.remove} />
       <div className={replyingTo ? "composer__box composer__box--replying" : "composer__box"}>
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="sr-only"
+          tabIndex={-1}
+          aria-hidden="true"
+          onChange={(event) => {
+            uploads.add([...(event.target.files ?? [])]);
+            event.target.value = "";
+          }}
+        />
+        <button type="button" className="icon-button composer__attach" aria-label="Enviar arquivo ou imagem" title="Enviar arquivo (ou arraste, ou Ctrl+V)" onClick={() => fileInputRef.current?.click()}>
+          <Plus {...ICON} />
+        </button>
         <textarea
           id="composer-input"
           ref={inputRef}
@@ -663,7 +759,7 @@ function Composer({
           rows={1}
           value={text}
           maxLength={LIMITS.messageMax}
-          placeholder={replyingTo ? `Responder a ${replyingTo.author.displayName}` : `Conversar em #${channelName}`}
+          placeholder={replyingTo ? `Responder a ${replyingTo.author.displayName}` : placeTitle.startsWith("#") ? `Conversar em ${placeTitle}` : `Mensagem para ${placeTitle}`}
           aria-label={replyingTo ? `Resposta a ${replyingTo.author.displayName} em ${channelName}` : `Mensagem em ${channelName}`}
           aria-autocomplete="list"
           aria-expanded={open}
@@ -676,13 +772,20 @@ function Composer({
           }}
           onSelect={(event) => trackCaret(event.currentTarget)}
           onKeyDown={onKeyDown}
+          onPaste={(event) => {
+            // print ou arquivo copiado: vai para a fila (texto colado continua normal)
+            const files = [...event.clipboardData.files];
+            if (files.length === 0) return;
+            event.preventDefault();
+            uploads.add(files);
+          }}
         />
         {remaining <= 200 && (
           <span className="composer__counter" aria-live="polite">
             {remaining}
           </span>
         )}
-        <button type="submit" className="icon-button send-button" aria-label="Enviar mensagem" disabled={sending || text.trim().length === 0}>
+        <button type="submit" className="icon-button send-button" aria-label="Enviar mensagem" disabled={sending || uploads.uploading || (text.trim().length === 0 && uploads.readyIds.length === 0)}>
           <SendHorizontal {...ICON} />
         </button>
       </div>

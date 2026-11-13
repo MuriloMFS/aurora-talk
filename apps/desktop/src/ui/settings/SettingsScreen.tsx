@@ -1,12 +1,13 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Accessibility, Bell, Keyboard, Languages, LogOut, Mic, Monitor, Palette, Settings2, UserRound, Volume2, X, type LucideIcon } from "lucide-react";
-import type { User } from "@aurora/schema";
+import type { User, DmPolicy } from "@aurora/schema";
 import type { PlatformInfo, PlatformPort, UpdateInfo } from "@aurora/platform";
 import type { ThemePreference } from "@aurora/ui/theme";
 import type { ApiClient } from "../../net/api";
 import type { SoundPlayer } from "../../sounds";
 import { ICON, ICON_SM } from "../shell";
 import { AccountSection } from "./AccountSection";
+import { DmPrivacy } from "../home";
 import { VoiceSection } from "./VoiceSection";
 import { AccessibilitySection, AdvancedSection, AppearanceSection, KeybindsSection, LanguageSection, NotificationsSection, SoundsSection, WindowsSection } from "./sections";
 
@@ -42,6 +43,9 @@ export interface SettingsScreenProps {
   theme: ThemePreference;
   onThemeChange: (theme: ThemePreference) => void;
   onUserUpdated: (user: User) => void;
+  /** Quem pode me mandar mensagem direta (fica no servidor). */
+  dmPolicy: DmPolicy;
+  onDmPolicy: (policy: DmPolicy) => void;
   availableUpdate: UpdateInfo | null;
   onCheckUpdate: () => Promise<"available" | "current" | "unsupported" | "error">;
   onInstallUpdate: () => void;
@@ -83,7 +87,12 @@ export function SettingsScreen(props: SettingsScreenProps) {
   let body: ReactNode;
   switch (section) {
     case "account":
-      body = <AccountSection me={props.me} api={props.api} onUserUpdated={props.onUserUpdated} onLogout={props.onLogout} />;
+      body = (
+        <>
+          <AccountSection me={props.me} api={props.api} onUserUpdated={props.onUserUpdated} onLogout={props.onLogout} />
+          <DmPrivacy dmPolicy={props.dmPolicy} api={props.api} onChange={props.onDmPolicy} />
+        </>
+      );
       break;
     case "voice":
       body = <VoiceSection platform={props.platform} />;

@@ -8,6 +8,8 @@ import "./ui.css";
 import "./conversation.css";
 import "./settings.css";
 import "./guild-settings.css";
+import "./attachments.css";
+import "./home.css";
 import { App } from "./App";
 
 const root = document.getElementById("root");

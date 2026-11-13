@@ -1,4 +1,5 @@
-import { useId, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { prepareAvatar } from "../../avatar-image";
 import { LIMITS, type User } from "@aurora/schema";
 import { ApiError, type ApiClient } from "../../net/api";
 import { Avatar } from "../shell";
@@ -11,12 +12,13 @@ export function AccountSection({ me, api, onUserUpdated, onLogout }: { me: User;
   return (
     <>
       <div className="settings-profile">
-        <Avatar user={me} size="lg" />
+        <Avatar user={me} size="xl" />
         <div className="settings-profile__text">
           <span className="settings-profile__name">{me.displayName}</span>
           <span className="settings-profile__username">@{me.username}</span>
         </div>
       </div>
+      <AvatarForm me={me} api={api} onUserUpdated={onUserUpdated} />
       <DisplayNameForm me={me} api={api} onUserUpdated={onUserUpdated} />
       <PasswordForm api={api} />
       <SettingsGroup title="Sair" description="Encerra a sessão neste aparelho. Suas mensagens e servidores continuam na conta.">
@@ -27,6 +29,72 @@ export function AccountSection({ me, api, onUserUpdated, onLogout }: { me: User;
         </div>
       </SettingsGroup>
     </>
+  );
+}
+
+/** Escolher, pré-visualizar e salvar a foto (recorte quadrado central, reduzida para 256 px no próprio app). */
+function AvatarForm({ me, api, onUserUpdated }: { me: User; api: ApiClient; onUserUpdated: (user: User) => void }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [preview, setPreview] = useState<{ blob: Blob; url: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<Status>(null);
+  useEffect(() => () => void (preview && URL.revokeObjectURL(preview.url)), [preview]);
+
+  const choose = async (file: File | undefined) => {
+    if (!file) return;
+    setStatus(null);
+    try {
+      const blob = await prepareAvatar(file);
+      setPreview({ blob, url: URL.createObjectURL(blob) });
+    } catch (error) {
+      setStatus({ kind: "error", text: error instanceof Error ? error.message : "Não deu para abrir essa imagem." });
+    } finally {
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  };
+  const save = async (work: () => Promise<User>, ok: string) => {
+    setBusy(true);
+    setStatus(null);
+    try {
+      onUserUpdated(await work());
+      setPreview(null);
+      setStatus({ kind: "ok", text: ok });
+    } catch (error) {
+      setStatus({ kind: "error", text: errorText(error, "Não foi possível salvar a foto. Confira a conexão e tente de novo.") });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <SettingsGroup title="Foto de perfil" description="Aparece nas conversas, na voz e na lista de membros. A imagem é cortada em quadrado pelo centro.">
+      <input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="sr-only" tabIndex={-1} aria-hidden="true" onChange={(event) => void choose(event.target.files?.[0])} />
+      {preview ? (
+        <div className="avatar-preview">
+          <img className="avatar-preview__img" src={preview.url} alt="Prévia da nova foto" />
+          <div className="settings-inline-form">
+            <button type="button" className="button button--primary" disabled={busy} onClick={() => void save(() => api.uploadAvatar(preview.blob), "Foto salva. Quem está nos seus servidores já vê a nova.")}>
+              {busy ? "Salvando…" : "Salvar foto"}
+            </button>
+            <button type="button" className="button button--secondary" disabled={busy} onClick={() => setPreview(null)}>
+              Cancelar
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="settings-inline-form">
+          <button type="button" className="button button--secondary" disabled={busy} onClick={() => inputRef.current?.click()}>
+            {me.avatar ? "Trocar foto" : "Escolher foto"}
+          </button>
+          {me.avatar && (
+            <button type="button" className="button button--ghost" disabled={busy} onClick={() => void save(() => api.removeAvatar(), "Foto removida. Voltou o avatar com as suas iniciais.")}>
+              Remover foto
+            </button>
+          )}
+        </div>
+      )}
+      <FormStatus status={status} />
+    </SettingsGroup>
   );
 }
 

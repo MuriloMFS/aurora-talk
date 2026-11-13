@@ -11,6 +11,8 @@ export interface User {
   id: Id;
   username: string;
   displayName: string;
+  /** Foto de perfil: id do arquivo (`GET /api/files/:id`); `null`/ausente = avatar de iniciais. */
+  avatar?: string | null;
 }
 
 export type ChannelType = "text" | "voice";
@@ -66,6 +68,35 @@ export interface Member {
   timeoutUntil?: number | null;
 }
 
+/** Minha relação com outra pessoa (cada lado tem a sua). */
+export type RelationshipType = "friend" | "incoming" | "outgoing" | "blocked";
+export interface Relationship {
+  user: User;
+  type: RelationshipType;
+  since: number;
+  /** Para a lista de amigos (bloqueados aparecem sempre offline). */
+  online: boolean;
+}
+
+/** Conversa direta: a dois (`dm`) ou em grupo (`group_dm`, até `LIMITS.groupDmMax` pessoas). */
+export interface DmChannel {
+  id: Id;
+  type: "dm" | "group_dm";
+  /** Nome do grupo (nulo = nomes das pessoas). Sempre nulo na conversa a dois. */
+  name: string | null;
+  /** Quem criou o grupo (pode tirar pessoas). */
+  ownerId: Id | null;
+  /** As outras pessoas da conversa (sem mim). */
+  recipients: User[];
+  lastMessageId: Id | null;
+}
+
+/** Quem pode me mandar mensagem direta: quem divide servidor comigo (padrão) ou só amigos. */
+export type DmPolicy = "servers" | "friends";
+export interface UserSettings {
+  dmPolicy: DmPolicy;
+}
+
 export interface Guild {
   id: Id;
   name: string;
@@ -102,8 +133,27 @@ export interface Message {
   reactions: Reaction[];
   /** Quem foi mencionado (inclui o autor da mensagem respondida). Só membros do servidor. */
   mentions: Id[];
+  /** Imagens e arquivos (até 10). Ausente em servidores antigos. */
+  attachments?: Attachment[];
   /** Eco do nonce enviado pelo cliente (de-duplicação do envio). */
   nonce?: string;
+}
+
+/** Arquivo anexado a uma mensagem. */
+export interface Attachment {
+  id: Id;
+  filename: string;
+  size: number;
+  /** Imagens: o tipo de verdade (conferido pelos bytes). O resto: `application/octet-stream`. */
+  contentType: string;
+  /** Tamanho da imagem, para reservar o espaço antes de carregar (nulo em arquivos). */
+  width: number | null;
+  height: number | null;
+  /**
+   * Caminho no servidor, assinado e com validade (~1 dia): quem não vê o canal não recebe o link, e
+   * um link repassado para de funcionar. Vazio enquanto o anexo não foi enviado numa mensagem.
+   */
+  url: string;
 }
 
 /** Leitura de um canal de texto, guardada no servidor (vale em todos os aparelhos). */
@@ -197,6 +247,16 @@ export const LIMITS = {
   reactionsPerMessage: 20,
   mentionsPerMessage: 20,
   banReasonMax: 200,
+  /** Foto de perfil já recortada e reduzida pelo app (256 px); o limite é folgado. */
+  avatarMaxBytes: 2 * 1024 * 1024,
+  avatarSize: 256,
+  /** Anexos: por arquivo e por mensagem. */
+  attachmentMaxBytes: 25 * 1024 * 1024,
+  attachmentsPerMessage: 10,
+  /** Pessoas num grupo de conversa direta (contando quem criou). */
+  groupDmMax: 10,
+  groupNameMax: 100,
+  filenameMax: 120,
   auditPageSize: 50,
 } as const;
 
@@ -291,7 +351,14 @@ export type DispatchEvent =
    * Só para quem foi movido: um moderador levou você para outra sala (`channelId`) ou tirou você da
    * voz (`null`). O estado de voz no servidor já mudou; o app troca de sala sem avisar "saí".
    */
-  | { t: "VOICE_MOVE"; d: { guildId: Id; channelId: Id | null } };
+  | { t: "VOICE_MOVE"; d: { guildId: Id; channelId: Id | null } }
+  /** Amizade, pedido ou bloqueio mudou (`type: null` = não há mais relação). Só para mim. */
+  | { t: "RELATIONSHIP_UPDATE"; d: { user: User; type: RelationshipType | null; since: number; online: boolean } }
+  /** Conversa direta nova (ou reaberta) para mim, ou que mudou (nome, pessoas). */
+  | { t: "DM_CHANNEL_CREATE"; d: DmChannel }
+  | { t: "DM_CHANNEL_UPDATE"; d: DmChannel }
+  /** Saí do grupo, fui tirado, ou fechei a conversa. */
+  | { t: "DM_CHANNEL_DELETE"; d: { id: Id } };
 
 export interface ReactionEvent {
   channelId: Id;
@@ -314,12 +381,25 @@ export const V2_EVENTS: ReadonlySet<DispatchEvent["t"]> = new Set([
   "CHANNEL_UPDATE",
   "CHANNEL_DELETE",
   "VOICE_MOVE",
+  "RELATIONSHIP_UPDATE",
+  "DM_CHANNEL_CREATE",
+  "DM_CHANNEL_UPDATE",
+  "DM_CHANNEL_DELETE",
 ]);
 
 export type ServerFrame =
   | { op: "hello"; heartbeatIntervalMs: number }
   /** `readStates` só para `v >= 2`. */
-  | { op: "ready"; user: User; guilds: Guild[]; readStates?: ReadState[] }
+  | {
+      op: "ready";
+      user: User;
+      guilds: Guild[];
+      readStates?: ReadState[];
+      /** 1.9: conversas diretas abertas, amigos/pedidos/bloqueios e preferências. */
+      privateChannels?: DmChannel[];
+      relationships?: Relationship[];
+      settings?: UserSettings;
+    }
   | { op: "heartbeat_ack" }
   | ({ op: "dispatch" } & DispatchEvent)
   | { op: "invalid_session"; reason: string };

@@ -49,7 +49,7 @@ describe("minha conta", () => {
 
     const res = await api<User>("PATCH", "/api/users/@me", ana.token, { displayName: "  Ana Clara  " });
     expect(res.status).toBe(200);
-    expect(res.data).toEqual({ id: ana.user.id, username: "ana", displayName: "Ana Clara" });
+    expect(res.data).toEqual({ id: ana.user.id, username: "ana", displayName: "Ana Clara", avatar: null });
     expect((await betoWs.event("USER_UPDATE")).d).toEqual(res.data);
     expect((await anaOutraAba.event("USER_UPDATE")).d).toEqual(res.data);
     await estranhoWs.expectNoEvent("USER_UPDATE");

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { LIMITS, hasPermission, outranks, type Channel, type ChannelType, type DispatchEvent, type Id, type Message, type User } from "@aurora/schema";
+import { LIMITS, hasPermission, outranks, type DmChannel, type Member, type Channel, type ChannelType, type DispatchEvent, type Id, type Message, type User } from "@aurora/schema";
 import type { ThemePreference } from "@aurora/ui/theme";
 import {
   createMediaEngine,
@@ -15,12 +15,27 @@ import {
 import { ApiClient, ApiError } from "./net/api";
 import { GatewayClient } from "./net/gateway";
 import type { Session } from "./net/session";
-import { createChatStore, isUnread, mentionCountOf, myChannelPermissions, myPermissions, myTimeout, useChatState, type ChatState } from "./state/chat-store";
+import {
+  createChatStore,
+  dmList,
+  dmMentionTotal,
+  dmName,
+  isBlocked,
+  isUnread,
+  mentionCountOf,
+  myChannelPermissions,
+  myPermissions,
+  myTimeout,
+  useChatState,
+  type ChatState,
+} from "./state/chat-store";
+import { DmHeaderActions, FriendsView, HomeSidebar, PickFriendsDialog, RenameGroupDialog } from "./ui/home";
 import { untilText } from "./roles";
+import { setMediaBase } from "./avatar-image";
 import { plainText } from "./markdown";
 import { ChatPane } from "./ui/ChatPane";
 import { CreateChannelDialog, CreateGuildDialog, InviteDialog, JoinGuildDialog } from "./ui/dialogs";
-import { CenterState, MemberList, Rail, Sidebar, type MyVoice } from "./ui/shell";
+import { CenterState, MemberList, Rail, Sidebar, UserPanel, type MyVoice } from "./ui/shell";
 import { ScreenShareDialog } from "./ui/ScreenShareDialog";
 import { StreamStage } from "./ui/StreamStage";
 import { UpdateButton } from "./ui/update";
@@ -44,8 +59,10 @@ const NOTIFICATION_BODY_MAX = 140;
 function notifyIfMentioned(state: ChatState, event: DispatchEvent, port: PlatformPort | null, settings: AppSettings, play: (id: SoundId) => void): void {
   if (event.t !== "MESSAGE_CREATE" || !state.me) return;
   const message = event.d;
-  if (message.author.id === state.me.id || !message.mentions.includes(state.me.id)) return;
+  const dm = state.dms[message.channelId];
+  if (message.author.id === state.me.id || (!dm && !message.mentions.includes(state.me.id))) return;
   if (state.focused && state.activeChannelId === message.channelId) return;
+  if (state.relationships[message.author.id]?.type === "blocked") return;
   play("mention");
   if (!port) return;
   if (settings.notifications.flash) port.requestAttention().catch(() => undefined);
@@ -55,8 +72,9 @@ function notifyIfMentioned(state: ChatState, event: DispatchEvent, port: Platfor
   const members = channel ? (state.members[channel.guildId] ?? {}) : {};
   const text = plainText(message.content, (id) => members[id]?.user.displayName ?? "alguém");
   const body = text.length > NOTIFICATION_BODY_MAX ? `${text.slice(0, NOTIFICATION_BODY_MAX - 1)}…` : text;
-  const where = channel ? ` em #${channel.name}${guild ? ` (${guild.name})` : ""}` : "";
-  port.notify({ title: `${message.author.displayName}${where}`, body: body || "Mencionou você." }).catch(() => undefined);
+  const where = channel ? ` em #${channel.name}${guild ? ` (${guild.name})` : ""}` : dm?.type === "group_dm" ? ` em ${dmName(dm)}` : "";
+  const fallback = message.attachments?.length ? "Enviou um arquivo." : dm ? "Mandou uma mensagem." : "Mencionou você.";
+  port.notify({ title: `${message.author.displayName}${where}`, body: body || fallback }).catch(() => undefined);
 }
 const NO_SPEAKERS: ReadonlySet<Id> = new Set();
 
@@ -93,6 +111,7 @@ interface ChatAppProps {
 
 export function ChatApp({ session, themePreference, onThemeChange, onLogout, availableUpdate, onCheckUpdate, onInstallUpdate }: ChatAppProps) {
   const api = useMemo(() => new ApiClient(session.serverUrl, session.token), [session]);
+  setMediaBase(session.serverUrl); // fotos de perfil vêm do mesmo servidor
   const store = useMemo(() => createChatStore(), []);
   const state = useChatState(store);
   const gatewayRef = useRef<GatewayClient | null>(null);
@@ -150,9 +169,9 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
   useEffect(() => {
     const gateway = new GatewayClient(session.serverUrl, session.token, {
       onStatus: (status) => store.dispatch({ type: "status", status }),
-      onReady: (user, guilds, readStates) => {
+      onReady: (user, guilds, readStates, extra) => {
         for (const read of readStates ?? []) ackedRef.current.set(read.channelId, read.lastReadId);
-        store.dispatch({ type: "ready", user, guilds, readStates });
+        store.dispatch({ type: "ready", user, guilds, readStates, ...extra });
         // Reconectou com a voz ligada: o servidor perdeu o estado junto com a conexão antiga.
         const current = voiceRef.current;
         if (current) {
@@ -285,30 +304,65 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
   const remembered = guild ? channelByGuild[guild.id] : undefined;
   const channelId = remembered && textChannelIds.includes(remembered) ? remembered : (textChannelIds[0] ?? null);
   const channel = channelId ? state.channels[channelId] : undefined;
-  const bucket = channelId ? state.messages[channelId] : undefined;
+  // Início: amigos e conversas diretas (o botão do topo da barra de servidores)
+  const [homeChosen, setHomeChosen] = useState(false);
+  const [activeDmId, setActiveDmId] = useState<Id | null>(null);
+  // sem servidor: Início se já há amigos ou conversas; senão, a tela de boas-vindas
+  const home = homeChosen || (!guild && (Object.keys(state.dms).length > 0 || Object.keys(state.relationships).length > 0));
+  const activeDm = home && activeDmId ? state.dms[activeDmId] : undefined;
+  /** O que está aberto no meio da tela: a conversa direta (no Início) ou o canal de texto do servidor. */
+  const chatId = home ? (activeDm?.id ?? null) : channelId;
+  const bucket = chatId ? state.messages[chatId] : undefined;
 
-  useEffect(() => store.dispatch({ type: "focusChannel", channelId }), [channelId, store]);
+  useEffect(() => store.dispatch({ type: "focusChannel", channelId: chatId }), [chatId, store]);
 
   // ---- histórico do canal aberto ----
   const [historyError, setHistoryError] = useState<Record<Id, string>>({});
   const [historyAttempt, setHistoryAttempt] = useState(0);
   useEffect(() => {
-    if (!channelId || state.status !== "ready" || bucket?.loaded) return;
+    if (!chatId || state.status !== "ready" || bucket?.loaded) return;
     let alive = true;
     api
-      .listMessages(channelId)
+      .listMessages(chatId)
       .then((messages) => {
         if (!alive) return;
-        store.dispatch({ type: "history", channelId, messages, mode: "latest", pageSize: LIMITS.pageSize });
-        setHistoryError(({ [channelId]: _removed, ...rest }) => rest);
+        store.dispatch({ type: "history", channelId: chatId, messages, mode: "latest", pageSize: LIMITS.pageSize });
+        setHistoryError(({ [chatId]: _removed, ...rest }) => rest);
       })
       .catch((error: unknown) => {
-        if (alive) setHistoryError((prev) => ({ ...prev, [channelId]: error instanceof ApiError ? error.message : "Não foi possível carregar as mensagens." }));
+        if (alive) setHistoryError((prev) => ({ ...prev, [chatId]: error instanceof ApiError ? error.message : "Não foi possível carregar as mensagens." }));
       });
     return () => {
       alive = false;
     };
-  }, [api, store, channelId, state.status, bucket?.loaded, historyAttempt]);
+  }, [api, store, chatId, state.status, bucket?.loaded, historyAttempt]);
+
+  // ---- conversas diretas e amigos ----
+  const [homeDialog, setHomeDialog] = useState<"newGroup" | "addPeople" | "rename" | null>(null);
+  /** Abre (ou cria) a conversa com essa pessoa e vai para ela. */
+  const openDmWith = async (userIds: Id[], name?: string) => {
+    try {
+      const dm = await api.openDm(userIds, name);
+      store.dispatch({ type: "dispatch", event: { t: "DM_CHANNEL_CREATE", d: dm }, now: Date.now() });
+      setHomeChosen(true);
+      setActiveDmId(dm.id);
+      setDrawerOpen(false);
+    } catch (error) {
+      setChatNotice(error instanceof ApiError ? error.message : "Não foi possível abrir a conversa. Tente de novo.");
+      throw error;
+    }
+  };
+  const closeDm = async (dm: DmChannel) => {
+    try {
+      await api.closeDm(dm.id);
+      store.dispatch({ type: "dispatch", event: { t: "DM_CHANNEL_DELETE", d: { id: dm.id } }, now: Date.now() });
+      if (activeDmId === dm.id) setActiveDmId(null);
+    } catch (error) {
+      setChatNotice(error instanceof ApiError ? error.message : "Não foi possível fechar a conversa. Tente de novo.");
+    }
+  };
+  const friendAction = (work: Promise<unknown>) =>
+    work.catch((error: unknown) => setChatNotice(error instanceof ApiError ? error.message : "Não deu certo. Confira a conexão e tente de novo."));
 
   // ---- ações de voz ----
   const leaveVoice = useCallback(
@@ -560,31 +614,167 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
     return { canMute: above && hasPermission(perms, "MUTE_MEMBERS"), canMove: above && hasPermission(perms, "MOVE_MEMBERS") };
   };
   const members = Object.values(membersById);
-  const typingNames = channelId
-    ? Object.keys(state.typing[channelId] ?? {})
-        .map((userId) => membersById[userId]?.user.displayName)
+  // pessoas de uma conversa direta, no formato de membro (nomes, menções e lista do grupo)
+  const dmMembers: Record<Id, Member> = activeDm
+    ? Object.fromEntries(
+        [state.me!, ...activeDm.recipients].map((user) => [
+          user.id,
+          { user, joinedAt: 0, online: user.id === state.me!.id ? state.status === "ready" : (state.relationships[user.id]?.online ?? Object.values(state.members).some((g) => g[user.id]?.online)), roles: [] },
+        ]),
+      )
+    : {};
+  const chatMembers = home ? dmMembers : membersById;
+  const typingNames = chatId
+    ? Object.keys(state.typing[chatId] ?? {})
+        .map((userId) => chatMembers[userId]?.user.displayName)
         .filter((name): name is string => Boolean(name))
     : [];
+  const relationships = Object.values(state.relationships);
+  const friends = relationships.filter((r) => r.type === "friend").map((r) => r.user);
+  const isOnline = (userId: Id) => state.relationships[userId]?.online ?? Object.values(state.members).some((g) => g[userId]?.online);
+  const otherBlocked = activeDm?.type === "dm" && activeDm.recipients[0] ? isBlocked(state, activeDm.recipients[0].id) : false;
+
+  /** O painel de conversa, para canal de servidor ou conversa direta. */
+  const renderChat = (target: Channel, options: { canSend: boolean; canReact: boolean; canManageMessages: boolean; blockedReason: string | null; dm?: DmChannel }) => (
+    <ChatPane
+      key={target.id}
+      channel={target}
+      bucket={bucket}
+      historyError={historyError[target.id] ?? null}
+      me={me}
+      canSend={options.canSend}
+      canReact={options.canReact}
+      canManageMessages={options.canManageMessages}
+      blockedReason={options.blockedReason}
+      dm={options.dm ? { title: dmName(options.dm), group: options.dm.type === "group_dm" } : undefined}
+      isBlocked={(userId) => isBlocked(state, userId)}
+      typingNames={typingNames}
+      status={state.status}
+      membersOpen={membersOpen}
+      membersById={chatMembers}
+      notice={chatNotice}
+      onDismissNotice={() => setChatNotice(null)}
+      onReact={toggleReaction}
+      onOpenLink={openLink}
+      onToggleMembers={() => setMembersOpen((open) => !open)}
+      onOpenDrawer={() => setDrawerOpen(true)}
+      headerExtra={
+        <>
+          {options.dm && (
+            <DmHeaderActions
+              dm={options.dm}
+              blocked={otherBlocked}
+              onRename={() => setHomeDialog("rename")}
+              onAddPeople={() => setHomeDialog("addPeople")}
+              onLeave={() => void closeDm(options.dm!)}
+              onToggleBlock={() => {
+                const other = options.dm!.recipients[0];
+                if (other) void friendAction(otherBlocked ? api.removeRelationship(other.id) : api.blockUser(other.id));
+              }}
+            />
+          )}
+          {availableUpdate ? <UpdateButton update={availableUpdate} onInstall={onInstallUpdate} /> : null}
+        </>
+      }
+      onRetryHistory={() => {
+        setHistoryError(({ [target.id]: _removed, ...rest }) => rest);
+        setHistoryAttempt((n) => n + 1);
+      }}
+      onLoadOlder={async () => {
+        const first = bucket?.items[0];
+        if (!first) return;
+        const messages = await api.listMessages(target.id, first.id);
+        store.dispatch({ type: "history", channelId: target.id, messages, mode: "older", pageSize: LIMITS.pageSize });
+      }}
+      onUpload={(file, meta, onProgress) => api.uploadAttachment(target.id, file, meta, onProgress)}
+      onSend={async (content, replyToId, attachmentIds) => {
+        const message = await api.sendMessage(target.id, content, crypto.randomUUID(), replyToId ?? undefined, attachmentIds);
+        ackedRef.current.set(target.id, message.id); // o servidor marca o que eu envio como lido
+        store.dispatch({ type: "messageUpsert", message });
+      }}
+      onEdit={async (id, content) => {
+        const message = await api.editMessage(id, content);
+        store.dispatch({ type: "dispatch", event: { t: "MESSAGE_UPDATE", d: message }, now: Date.now() });
+      }}
+      onDelete={async (id) => {
+        await api.deleteMessage(id);
+        store.dispatch({ type: "dispatch", event: { t: "MESSAGE_DELETE", d: { id, channelId: target.id } }, now: Date.now() });
+      }}
+      onTyping={() => {
+        const now = Date.now();
+        if (now - lastTypingRef.current < TYPING_THROTTLE_MS) return;
+        lastTypingRef.current = now;
+        gatewayRef.current?.sendTyping(target.id);
+      }}
+    />
+  );
   const statusText = state.status === "ready" ? (platform?.kind === "tauri" ? `Online · v${platform.appVersion}` : "Online") : "Reconectando…";
   const channelsOf = (type: ChannelType) =>
     guild ? guild.channelIds.map((id) => state.channels[id]).filter((c): c is Channel => c !== undefined && c.type === type) : [];
 
   return (
-    <div className="app" data-members={membersOpen && guild ? "open" : "closed"} data-drawer={drawerOpen ? "open" : "closed"} data-has-guild={guild ? "yes" : "no"}>
+    <div
+      className="app"
+      data-members={membersOpen && ((!home && guild) || activeDm?.type === "group_dm") ? "open" : "closed"}
+      data-drawer={drawerOpen ? "open" : "closed"}
+      data-has-guild={guild || home ? "yes" : "no"}
+    >
       <a className="skip-link" href="#composer-input">
         Pular para o campo de mensagem
       </a>
       <Rail
         guilds={guilds}
         activeGuildId={guild?.id ?? null}
+        homeActive={home}
+        homeMentions={dmMentionTotal(state)}
+        onHome={() => setHomeChosen(true)}
         unreadGuildIds={unreadGuildIds}
         guildMentions={guildMentions}
-        onSelect={(id) => setSelectedGuildId(id)}
+        onSelect={(id) => {
+          setHomeChosen(false);
+          setSelectedGuildId(id);
+        }}
         onCreate={() => setDialog("createGuild")}
         onJoin={() => setDialog("joinGuild")}
       />
 
-      {guild && channel ? (
+      {home ? (
+        <>
+          <HomeSidebar
+            dms={dmList(state)}
+            activeDmId={activeDm?.id ?? null}
+            friendsActive={!activeDm}
+            pendingCount={relationships.filter((r) => r.type === "incoming").length}
+            mentions={channelMentions}
+            unread={unreadChannels}
+            isOnline={isOnline}
+            onFriends={() => {
+              setActiveDmId(null);
+              setDrawerOpen(false);
+            }}
+            onOpenDm={(id) => {
+              setActiveDmId(id);
+              setDrawerOpen(false);
+            }}
+            onCloseDm={(dm) => void closeDm(dm)}
+            onNewGroup={() => setHomeDialog("newGroup")}
+            footer={<UserPanel me={me} online={state.status === "ready"} statusText={statusText} onOpenSettings={() => setSettingsOpen("account")} />}
+          />
+          {activeDm
+            ? renderChat(
+                { id: activeDm.id, guildId: "", type: "text", name: dmName(activeDm), position: 0, overwrites: [] },
+                {
+                  canSend: !otherBlocked,
+                  canReact: !otherBlocked,
+                  canManageMessages: false,
+                  blockedReason: otherBlocked ? "Você bloqueou esta pessoa. Desbloqueie (no topo da conversa) para voltar a conversar." : null,
+                  dm: activeDm,
+                },
+              )
+            : <FriendsView relationships={relationships} api={api} onMessage={(user) => void openDmWith([user.id]).catch(() => undefined)} onOpenDrawer={() => setDrawerOpen(true)} />}
+          {activeDm?.type === "group_dm" && membersOpen && <MemberList members={Object.values(dmMembers)} ownerId={activeDm.ownerId ?? ""} roles={[]} />}
+        </>
+      ) : guild && channel ? (
         <>
           <Sidebar
             guild={guild}
@@ -640,59 +830,24 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
               onBack={() => setStageOpen(false)}
             />
           ) : (
-          <ChatPane
-            key={channel.id}
-            channel={channel}
-            bucket={bucket}
-            historyError={historyError[channel.id] ?? null}
-            me={me}
-            canSend={hasPermission(channelPermissions, "SEND_MESSAGES")}
-            canReact={hasPermission(channelPermissions, "ADD_REACTIONS")}
-            canManageMessages={hasPermission(channelPermissions, "MANAGE_MESSAGES")}
-            blockedReason={timeoutUntil ? `Você está de castigo ${untilText(timeoutUntil)}. Até lá, dá para ler, mas não escrever nem reagir.` : null}
-            typingNames={typingNames}
-            status={state.status}
-            membersOpen={membersOpen}
-            membersById={membersById}
-            notice={chatNotice}
-            onDismissNotice={() => setChatNotice(null)}
-            onReact={toggleReaction}
-            onOpenLink={openLink}
-            onToggleMembers={() => setMembersOpen((open) => !open)}
-            onOpenDrawer={() => setDrawerOpen(true)}
-            headerExtra={availableUpdate ? <UpdateButton update={availableUpdate} onInstall={onInstallUpdate} /> : null}
-            onRetryHistory={() => {
-              setHistoryError(({ [channel.id]: _removed, ...rest }) => rest);
-              setHistoryAttempt((n) => n + 1);
-            }}
-            onLoadOlder={async () => {
-              const first = bucket?.items[0];
-              if (!first) return;
-              const messages = await api.listMessages(channel.id, first.id);
-              store.dispatch({ type: "history", channelId: channel.id, messages, mode: "older", pageSize: LIMITS.pageSize });
-            }}
-            onSend={async (content, replyToId) => {
-              const message = await api.sendMessage(channel.id, content, crypto.randomUUID(), replyToId ?? undefined);
-              ackedRef.current.set(channel.id, message.id); // o servidor marca o que eu envio como lido
-              store.dispatch({ type: "messageUpsert", message });
-            }}
-            onEdit={async (id, content) => {
-              const message = await api.editMessage(id, content);
-              store.dispatch({ type: "dispatch", event: { t: "MESSAGE_UPDATE", d: message }, now: Date.now() });
-            }}
-            onDelete={async (id) => {
-              await api.deleteMessage(id);
-              store.dispatch({ type: "dispatch", event: { t: "MESSAGE_DELETE", d: { id, channelId: channel.id } }, now: Date.now() });
-            }}
-            onTyping={() => {
-              const now = Date.now();
-              if (now - lastTypingRef.current < TYPING_THROTTLE_MS) return;
-              lastTypingRef.current = now;
-              gatewayRef.current?.sendTyping(channel.id);
-            }}
-          />
+            renderChat(channel, {
+              canSend: hasPermission(channelPermissions, "SEND_MESSAGES"),
+              canReact: hasPermission(channelPermissions, "ADD_REACTIONS"),
+              canManageMessages: hasPermission(channelPermissions, "MANAGE_MESSAGES"),
+              blockedReason: timeoutUntil ? `Você está de castigo ${untilText(timeoutUntil)}. Até lá, dá para ler, mas não escrever nem reagir.` : null,
+            })
           )}
-          {membersOpen && !stageOpen && <MemberList members={members} ownerId={guild.ownerId} roles={guild.roles} />}
+          {membersOpen && !stageOpen && (
+            <MemberList
+              members={members}
+              ownerId={guild.ownerId}
+              roles={guild.roles}
+              meId={me.id}
+              canAddFriend={(userId) => !state.relationships[userId]}
+              onMessage={(user) => void openDmWith([user.id]).catch(() => undefined)}
+              onAddFriend={(user) => void friendAction(api.requestFriendById(user.id))}
+            />
+          )}
         </>
       ) : (
         <main className="chat chat--empty">
@@ -710,6 +865,33 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
           </CenterState>
         </main>
       )}
+      {homeDialog === "newGroup" && (
+        <PickFriendsDialog
+          title="Nova conversa"
+          description="Escolha 1 amigo para conversar a dois, ou mais para um grupo."
+          friends={friends}
+          max={LIMITS.groupDmMax - 1}
+          withName
+          confirmLabel="Começar conversa"
+          onConfirm={(ids, name) => openDmWith(ids, name || undefined)}
+          onClose={() => setHomeDialog(null)}
+        />
+      )}
+      {homeDialog === "addPeople" && activeDm && (
+        <PickFriendsDialog
+          title={`Pôr pessoas em ${dmName(activeDm)}`}
+          description={`O grupo pode ter até ${LIMITS.groupDmMax} pessoas, contando você.`}
+          friends={friends}
+          exclude={activeDm.recipients.map((r) => r.id)}
+          max={LIMITS.groupDmMax - 1 - activeDm.recipients.length}
+          confirmLabel="Pôr no grupo"
+          onConfirm={async (ids) => {
+            for (const id of ids) await api.addToGroupDm(activeDm.id, id);
+          }}
+          onClose={() => setHomeDialog(null)}
+        />
+      )}
+      {homeDialog === "rename" && activeDm && <RenameGroupDialog dm={activeDm} onRename={(name) => api.renameGroupDm(activeDm.id, name).then(() => undefined)} onClose={() => setHomeDialog(null)} />}
 
       {drawerOpen && <div className="scrim" aria-hidden="true" onClick={() => setDrawerOpen(false)} />}
 
@@ -770,6 +952,8 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
           theme={themePreference}
           onThemeChange={onThemeChange}
           onUserUpdated={(user: User) => store.dispatch({ type: "dispatch", event: { t: "USER_UPDATE", d: user }, now: Date.now() })}
+          dmPolicy={state.settings.dmPolicy}
+          onDmPolicy={(dmPolicy) => store.dispatch({ type: "settings", settings: { dmPolicy } })}
           availableUpdate={availableUpdate}
           onCheckUpdate={onCheckUpdate}
           onInstallUpdate={onInstallUpdate}

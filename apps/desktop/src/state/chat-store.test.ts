@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_EVERYONE_PERMISSIONS, PERMISSIONS, hasPermission, type Guild, type Message, type User } from "@aurora/schema";
-import { TYPING_TTL_MS, chatReducer, initialChatState, isUnread, mentionCountOf, myChannelPermissions, myPermissions, myTimeout, type ChatState } from "./chat-store";
+import { TYPING_TTL_MS, chatReducer, dmList, dmMentionTotal, dmName, initialChatState, isBlocked, isUnread, mentionCountOf, myChannelPermissions, myPermissions, myTimeout, type ChatState } from "./chat-store";
 
 const ana: User = { id: "1", username: "ana", displayName: "Ana" };
 const bia: User = { id: "2", username: "bia", displayName: "Bia" };
@@ -203,6 +203,31 @@ describe("chatReducer", () => {
     state = dispatch(state, { t: "CHANNEL_DELETE", d: { id: "30", guildId: "10" } });
     expect(state.voice["10"]?.["2"]).toBeUndefined();
     expect(chatReducer(state, { type: "dispatch", event: { t: "VOICE_MOVE", d: { guildId: "10", channelId: null } }, now: 0 })).toBe(state); // o ChatApp é quem age
+  });
+
+  it("conversas diretas: toda mensagem conta como menção, a lista anda para a mais recente; sair some com tudo", () => {
+    const dm = { id: "70", type: "dm" as const, name: null, ownerId: null, recipients: [bia], lastMessageId: null };
+    const group = { id: "71", type: "group_dm" as const, name: null, ownerId: "1", recipients: [bia, { id: "3", username: "caio", displayName: "Caio" }], lastMessageId: null };
+    let state = chatReducer(initialChatState, { type: "ready", user: ana, guilds: [guild], privateChannels: [dm, group], relationships: [{ user: bia, type: "friend", since: 0, online: false }] });
+    expect(dmName(group)).toBe("Bia, Caio");
+    state = create(state, msg("500", bia, "70", "oi"));
+    expect(mentionCountOf(state, "70")).toBe(1); // sem @, mas é conversa direta
+    expect(dmMentionTotal(state)).toBe(1);
+    state = create(state, msg("501", bia, "71", "grupo"));
+    expect(dmList(state).map((d) => d.id)).toEqual(["71", "70"]);
+    const dispatch = (s: ChatState, event: Extract<Parameters<typeof chatReducer>[1], { type: "dispatch" }>["event"]) => chatReducer(s, { type: "dispatch", event, now: 0 });
+    state = dispatch(state, { t: "PRESENCE_UPDATE", d: { userId: "2", online: true } });
+    expect(state.relationships["2"]?.online).toBe(true);
+    state = dispatch(state, { t: "USER_UPDATE", d: { ...bia, displayName: "Bia Souza" } });
+    expect(state.dms["70"]?.recipients[0]?.displayName).toBe("Bia Souza");
+    expect(state.relationships["2"]?.user.displayName).toBe("Bia Souza");
+    state = dispatch(state, { t: "RELATIONSHIP_UPDATE", d: { user: bia, type: "blocked", since: 1, online: false } });
+    expect(isBlocked(state, "2")).toBe(true);
+    state = dispatch(state, { t: "DM_CHANNEL_DELETE", d: { id: "71" } });
+    expect(state.dms["71"]).toBeUndefined();
+    expect(state.reads["71"]).toBeUndefined();
+    state = dispatch(state, { t: "RELATIONSHIP_UPDATE", d: { user: bia, type: null, since: 2, online: false } });
+    expect(state.relationships["2"]).toBeUndefined();
   });
 
   it("canal renomeado e apagado; servidor renomeado; expulsão de outra pessoa e a minha", () => {

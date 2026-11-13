@@ -6,6 +6,9 @@ import {
   computePermissions,
   type Channel,
   type DispatchEvent,
+  type DmChannel,
+  type Relationship,
+  type UserSettings,
   type Guild,
   type Id,
   type Member,
@@ -57,11 +60,16 @@ export interface ChatState {
   focused: boolean;
   /** guildId → userId → quem está em qual canal de voz. */
   voice: Record<Id, Record<Id, VoiceState>>;
+  /** Conversas diretas abertas (as mensagens e a leitura ficam em `messages`/`reads`, como os canais). */
+  dms: Record<Id, DmChannel>;
+  /** Amigos, pedidos e bloqueios, por id da outra pessoa. */
+  relationships: Record<Id, Relationship>;
+  settings: UserSettings;
 }
 
 export type ChatAction =
   | { type: "status"; status: ConnectionStatus }
-  | { type: "ready"; user: User; guilds: Guild[]; readStates?: ReadState[] }
+  | { type: "ready"; user: User; guilds: Guild[]; readStates?: ReadState[]; privateChannels?: DmChannel[]; relationships?: Relationship[]; settings?: UserSettings }
   | { type: "dispatch"; event: DispatchEvent; now: number }
   | { type: "guildUpsert"; guild: Guild }
   | { type: "channelUpsert"; channel: Channel }
@@ -69,7 +77,8 @@ export type ChatAction =
   | { type: "history"; channelId: Id; messages: Message[]; mode: "latest" | "older"; pageSize: number }
   | { type: "focusChannel"; channelId: Id | null }
   | { type: "windowFocus"; focused: boolean }
-  | { type: "typingExpire"; now: number };
+  | { type: "typingExpire"; now: number }
+  | { type: "settings"; settings: UserSettings };
 
 export const initialChatState: ChatState = {
   me: null,
@@ -84,6 +93,9 @@ export const initialChatState: ChatState = {
   activeChannelId: null,
   focused: true,
   voice: {},
+  dms: {},
+  relationships: {},
+  settings: { dmPolicy: "servers" },
 };
 
 const byId = (a: { id: Id }, b: { id: Id }) => Number(a.id) - Number(b.id);
@@ -95,6 +107,19 @@ export const isUnread = (state: ChatState, channelId: Id): boolean => {
   return Boolean(read && newer(read.lastMessageId, read.lastReadId));
 };
 export const mentionCountOf = (state: ChatState, channelId: Id): number => state.reads[channelId]?.mentionCount ?? 0;
+
+/** Conversas diretas, da mais recente para a mais antiga. */
+export const dmList = (state: ChatState): DmChannel[] =>
+  Object.values(state.dms).sort((a, b) => Number(b.lastMessageId ?? b.id) - Number(a.lastMessageId ?? a.id));
+
+/** Nome da conversa: o do grupo, ou o nome das pessoas. */
+export const dmName = (dm: DmChannel): string =>
+  dm.name ?? (dm.recipients.length > 0 ? dm.recipients.map((u) => u.displayName).join(", ") : "Grupo vazio");
+
+/** Mensagens diretas não lidas (todas contam como menção): selo do botão Início. */
+export const dmMentionTotal = (state: ChatState): number => Object.keys(state.dms).reduce((sum, id) => sum + mentionCountOf(state, id), 0);
+
+export const isBlocked = (state: ChatState, userId: Id): boolean => state.relationships[userId]?.type === "blocked";
 
 /** Minhas permissões neste servidor (o servidor confere de novo; aqui só serve para esconder o que não posso). */
 export function myPermissions(state: ChatState, guildId: Id, now: number = Date.now()): number {
@@ -183,7 +208,12 @@ function withUser(state: ChatState, user: User): ChatState {
     });
     messages[channelId] = changed ? { ...bucket, items } : bucket;
   }
-  return { ...state, me: state.me?.id === user.id ? user : state.me, members, messages };
+  const rel = state.relationships[user.id];
+  const relationships = rel ? { ...state.relationships, [user.id]: { ...rel, user } } : state.relationships;
+  const dms = Object.fromEntries(
+    Object.entries(state.dms).map(([id, dm]) => [id, dm.recipients.some((r) => r.id === user.id) ? { ...dm, recipients: dm.recipients.map((r) => (r.id === user.id ? user : r)) } : dm]),
+  );
+  return { ...state, me: state.me?.id === user.id ? user : state.me, members, messages, relationships, dms };
 }
 
 /** Tira canais do estado (canal apagado ou servidor que saiu da minha lista), com mensagens e leituras. */
@@ -230,7 +260,8 @@ function withMessage(state: ChatState, message: Message): ChatState {
   if (mine || isWatching(state, message.channelId)) {
     nextRead = { lastReadId: newer(lastMessageId, read.lastReadId) ? lastMessageId! : read.lastReadId, lastMessageId, mentionCount: mine ? 0 : read.mentionCount };
   } else {
-    const mentionsMe = !known && newer(message.id, read.lastReadId) && state.me !== null && message.mentions.includes(state.me.id);
+    const isDm = message.channelId in state.dms;
+    const mentionsMe = !known && newer(message.id, read.lastReadId) && state.me !== null && (isDm || message.mentions.includes(state.me.id));
     nextRead = { ...read, lastMessageId, mentionCount: read.mentionCount + (mentionsMe ? 1 : 0) };
   }
 
@@ -239,7 +270,9 @@ function withMessage(state: ChatState, message: Message): ChatState {
     channelTyping && message.author.id in channelTyping
       ? { ...state.typing, [message.channelId]: Object.fromEntries(Object.entries(channelTyping).filter(([id]) => id !== message.author.id)) }
       : state.typing;
-  return { ...state, messages, reads: { ...state.reads, [message.channelId]: nextRead }, typing };
+  const dm = state.dms[message.channelId];
+  const dms = dm && newer(message.id, dm.lastMessageId) ? { ...state.dms, [dm.id]: { ...dm, lastMessageId: message.id } } : state.dms;
+  return { ...state, messages, reads: { ...state.reads, [message.channelId]: nextRead }, typing, dms };
 }
 
 /** Aplica uma mudança a uma mensagem já carregada (reações etc.). */
@@ -282,7 +315,9 @@ function applyDispatch(state: ChatState, event: DispatchEvent, now: number): Cha
         const member = guildMembers[event.d.userId];
         if (member) members[guildId] = { ...guildMembers, [event.d.userId]: { ...member, online: event.d.online } };
       }
-      return { ...state, members };
+      const rel = state.relationships[event.d.userId];
+      const relationships = rel && rel.type !== "blocked" ? { ...state.relationships, [rel.user.id]: { ...rel, online: event.d.online } } : state.relationships;
+      return { ...state, members, relationships };
     }
     case "MESSAGE_CREATE":
       return withMessage(state, event.d);
@@ -312,6 +347,19 @@ function applyDispatch(state: ChatState, event: DispatchEvent, now: number): Cha
     }
     case "USER_UPDATE":
       return withUser(state, event.d);
+    case "RELATIONSHIP_UPDATE": {
+      const { [event.d.user.id]: _old, ...rest } = state.relationships;
+      const relationships = event.d.type === null ? rest : { ...rest, [event.d.user.id]: { user: event.d.user, type: event.d.type, since: event.d.since, online: event.d.online } };
+      return { ...state, relationships };
+    }
+    case "DM_CHANNEL_CREATE":
+    case "DM_CHANNEL_UPDATE":
+      return { ...state, dms: { ...state.dms, [event.d.id]: event.d } };
+    case "DM_CHANNEL_DELETE": {
+      if (!state.dms[event.d.id]) return state;
+      const { [event.d.id]: _gone, ...dms } = state.dms;
+      return { ...withoutChannels(state, [event.d.id]), dms };
+    }
     case "GUILD_UPDATE": {
       const guild = state.guilds[event.d.id];
       return guild ? { ...state, guilds: { ...state.guilds, [guild.id]: { ...guild, name: event.d.name } } } : state;
@@ -378,7 +426,17 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       const reads = action.readStates
         ? Object.fromEntries(action.readStates.map((r) => [r.channelId, { lastReadId: r.lastReadId, lastMessageId: r.lastMessageId, mentionCount: r.mentionCount }]))
         : state.reads;
-      let next: ChatState = { ...initialChatState, me: action.user, status: "ready", reads, activeChannelId: state.activeChannelId, focused: state.focused };
+      let next: ChatState = {
+        ...initialChatState,
+        me: action.user,
+        status: "ready",
+        reads,
+        activeChannelId: state.activeChannelId,
+        focused: state.focused,
+        dms: Object.fromEntries((action.privateChannels ?? []).map((dm) => [dm.id, dm])),
+        relationships: Object.fromEntries((action.relationships ?? []).map((r) => [r.user.id, r])),
+        settings: action.settings ?? initialChatState.settings,
+      };
       for (const guild of action.guilds) next = withGuild(next, guild);
       return state.focused ? markRead(next, state.activeChannelId) : next;
     }
@@ -405,6 +463,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       const next = { ...state, focused: action.focused };
       return action.focused ? markRead(next, state.activeChannelId) : next;
     }
+    case "settings":
+      return { ...state, settings: action.settings };
     case "typingExpire": {
       let changed = false;
       const typing: ChatState["typing"] = {};

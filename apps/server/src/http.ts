@@ -36,7 +36,10 @@ import {
   type Role,
   type AuthResponse,
   type Channel,
+  type DmChannel,
   type Guild,
+  type Relationship,
+  type RelationshipType,
   type Id,
   type Message,
   type IceServer,
@@ -47,12 +50,18 @@ import { hashPassword, hashToken, newSessionToken, verifyAgainstDummy, verifyPas
 import type { Gateway } from "./gateway.ts";
 import { isValidId } from "./ids.ts";
 import { RateLimiter } from "./rate-limit.ts";
-import type { Store } from "./store.ts";
+import type { ServerChannel, Store } from "./store.ts";
 import { registerSiteRoutes } from "./site.ts";
+import { FileStore, cleanFilename, detectImageType, verifyAttachment } from "./files.ts";
+import { createHash } from "node:crypto";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { nextId } from "./ids.ts";
 import type { IceServerSource } from "./turn.ts";
 import { registerUpdateRoutes } from "./updates.ts";
 
-export const SERVER_VERSION = "1.6.0";
+export const SERVER_VERSION = "1.9.0";
 
 export class HttpError extends Error {
   readonly status: number;
@@ -121,6 +130,20 @@ const timeoutBody = z.object({
 });
 const voiceModerationBody = z.object({ muted: z.boolean().optional(), channelId: z.string().max(20).nullable().optional() });
 const auditQuery = z.object({ before: z.string().optional() });
+const friendRequestBody = z.union([
+  z.object({ username: z.string().trim().toLowerCase().min(1, "Informe o @usuário da pessoa.").max(LIMITS.usernameMax + 1).transform((u) => u.replace(/^@/, "")) }),
+  z.object({ userId: z.string().max(20) }),
+]);
+const relationshipBody = z.object({ type: z.enum(["friend", "blocked"]) });
+const settingsBody = z.object({ dmPolicy: z.enum(["servers", "friends"]) });
+const dmCreateBody = z.object({
+  recipientIds: z
+    .array(z.string().max(20))
+    .min(1, "Escolha com quem conversar.")
+    .max(LIMITS.groupDmMax - 1, `Um grupo pode ter até ${LIMITS.groupDmMax} pessoas, contando você.`),
+  name: z.string().trim().max(LIMITS.groupNameMax).optional(),
+});
+const groupNameBody = z.object({ name: z.string().trim().max(LIMITS.groupNameMax, `O nome do grupo pode ter no máximo ${LIMITS.groupNameMax} caracteres.`) });
 const loginBody = z.object({
   username: z.string().trim().toLowerCase().min(1, "Informe o usuário."),
   password: z.string().min(1, "Informe a senha."),
@@ -138,7 +161,24 @@ const channelBody = z.object({
   /** Só quem você liberar vê (você continua vendo). */
   private: z.boolean().optional(),
 });
-const messageBody = z.object({ content: contentField, nonce: z.string().max(64).optional(), replyToId: z.string().max(20).optional() });
+const messageBody = z.object({
+  // com anexo, o texto pode ficar vazio
+  content: z.string().trim().max(LIMITS.messageMax, `A mensagem pode ter no máximo ${LIMITS.messageMax} caracteres.`).default(""),
+  nonce: z.string().max(64).optional(),
+  replyToId: z.string().max(20).optional(),
+  attachmentIds: z
+    .array(z.string().max(20))
+    .max(LIMITS.attachmentsPerMessage, `Dá para enviar até ${LIMITS.attachmentsPerMessage} arquivos por mensagem.`)
+    .optional(),
+});
+const uploadQuery = z.object({
+  filename: z.string().max(400).optional(),
+  width: z.coerce.number().int().min(1).max(20_000).optional(),
+  height: z.coerce.number().int().min(1).max(20_000).optional(),
+});
+/** Anexo enviado e ainda não usado numa mensagem há mais que isso: apagado. */
+const PENDING_ATTACHMENT_MS = 60 * 60_000;
+const SWEEP_EVERY_MS = 10 * 60_000;
 const ackBody = z.object({ messageId: z.string().max(20) });
 const editBody = z.object({ content: contentField });
 const pageQuery = z.object({
@@ -159,6 +199,8 @@ interface Deps {
   voice?: { apiKey: string; apiSecret: string; url?: string; apiUrl?: string };
   /** Retransmissor TURN (credenciais temporárias por entrada na voz). Sem ele, só conexão direta à mídia. */
   turn?: IceServerSource;
+  /** Pasta dos arquivos enviados (fotos de perfil). Sem ela, uma pasta temporária (testes). */
+  filesDir?: string;
   /** Pasta do site de download (apps/site/dist). Sem ela, "/" responde 404. */
   siteDir?: string;
   /**
@@ -172,7 +214,15 @@ const VOICE_TOKEN_TTL = "6h";
 /** Quem foi movido e não trocou de sala (app antigo) sai da sala de mídia antiga depois disso. */
 const MOVE_GRACE_MS = 15_000;
 
-export async function buildApp({ store, gateway, logger = false, releasesDir, voice, turn, siteDir, trustCloudflare = false }: Deps): Promise<FastifyInstance> {
+export async function buildApp({ store, gateway, logger = false, releasesDir, voice, turn, siteDir, filesDir, trustCloudflare = false }: Deps): Promise<FastifyInstance> {
+  const files = new FileStore(filesDir ?? join(mkdtempSync(join(tmpdir(), "aurora-files-")), "files"));
+  /** Apaga anexos abandonados e os de mensagens/canais apagados (banco e disco). */
+  const sweepFiles = async (now = Date.now()) => {
+    for (const id of store.orphanAttachments(now - PENDING_ATTACHMENT_MS)) {
+      store.deleteFile(id);
+      await files.remove(id);
+    }
+  };
   // Nível "warn": logs de cada requisição (nível info) ficam de fora.
   const app = Fastify({
     logger: logger ? { level: "warn" } : false,
@@ -202,12 +252,17 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
   await app.register(websocket, { options: { maxPayload: 16 * 1024 } });
   // Desligamento: o gateway para de consultar o banco antes de as conexões fecharem.
   app.addHook("preClose", async () => gateway.shutdown());
+  const sweepTimer = setInterval(() => void sweepFiles().catch(() => undefined), SWEEP_EVERY_MS);
+  sweepTimer.unref();
+  app.addHook("onClose", async () => clearInterval(sweepTimer));
+  app.decorate("sweepFiles", sweepFiles);
 
   const authLimiter = new RateLimiter(10, 60_000);
   const messageLimiter = new RateLimiter(10, 10_000);
   const actionLimiter = new RateLimiter(30, 60_000);
   const reactionLimiter = new RateLimiter(20, 10_000);
   const ackLimiter = new RateLimiter(60, 10_000);
+  const uploadLimiter = new RateLimiter(30, 60_000);
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof HttpError) {
@@ -217,6 +272,12 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
       return reply.status(400).send({ error: { code: "invalid_request", message: error.issues[0]?.message ?? "Requisição inválida." } });
     }
     const status = (error as { statusCode?: number }).statusCode;
+    if (status === 413) {
+      return reply.status(413).send({ error: { code: "too_large", message: "O arquivo é grande demais. Escolha um menor." } });
+    }
+    if (status === 415) {
+      return reply.status(415).send({ error: { code: "unsupported_type", message: "Formato não aceito. Use uma imagem PNG, JPEG, WebP ou GIF." } });
+    }
     if (status && status >= 400 && status < 500) {
       return reply.status(status).send({ error: { code: "bad_request", message: "Requisição inválida." } });
     }
@@ -254,6 +315,12 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     if (!channel || !hasPermission(store.channelPermissionsOf(channel, userId), "VIEW_CHANNEL")) throw new HttpError(404, "not_found", "Canal não encontrado.");
     return channel;
   };
+  /** Canal de servidor que o usuário vê, ou conversa direta da qual participa (rotas de mensagem). */
+  const chatChannel = (channelId: string, userId: Id): ServerChannel => {
+    const channel = isValidId(channelId) ? store.getConversation(channelId) : undefined;
+    if (!channel || !hasPermission(store.channelPermissionsOf(channel, userId), "VIEW_CHANNEL")) throw new HttpError(404, "not_found", "Canal não encontrado.");
+    return channel;
+  };
   /** Menções válidas: só quem vê o canal, mais o autor da mensagem respondida (como no Discord). */
   const mentionsFor = (channel: Channel, content: string, replyAuthorId: Id | null | undefined, authorId: Id): Id[] => {
     const members = new Set(store.channelViewerIds(channel));
@@ -263,7 +330,7 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
   };
   /** Mensagem de um canal de texto do qual o usuário é membro (404 se não for). */
   const channelMessage = (channelId: string, messageId: string, userId: Id): { channel: Channel; message: Message } => {
-    const channel = memberChannel(channelId, userId);
+    const channel = chatChannel(channelId, userId);
     const message = isValidId(messageId) ? store.getMessage(messageId) : undefined;
     if (!message || message.channelId !== channel.id) throw new HttpError(404, "not_found", "Mensagem não encontrada.");
     return { channel, message };
@@ -277,8 +344,9 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
       throw new HttpError(403, "missing_permission", `Você não tem a permissão "${PERMISSION_LABEL[name]}" neste servidor. Peça a quem administra.`);
     }
   };
-  const requireChannelPermission = (channel: Channel, userId: Id, name: PermissionName) => {
+  const requireChannelPermission = (channel: ServerChannel, userId: Id, name: PermissionName) => {
     if (!hasPermission(store.channelPermissionsOf(channel, userId), name)) {
+      if (channel.dm) throw new HttpError(403, "dm_blocked", "Sua mensagem não pôde ser entregue: uma das pessoas bloqueou a outra.");
       if (store.timeoutOf(channel.guildId, userId) !== null) throw new HttpError(403, "timed_out", TIMED_OUT);
       throw new HttpError(403, "missing_permission", `Você não tem a permissão "${PERMISSION_LABEL[name]}" neste canal. Peça a quem administra.`);
     }
@@ -426,6 +494,257 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     if (!updated) throw new HttpError(404, "not_found", "Conta não encontrada.");
     if (updated.displayName !== user.displayName) gateway.dispatchToUsers([user.id, ...store.peersOf(user.id)], { t: "USER_UPDATE", d: updated });
     return updated;
+  });
+
+  /* ---------- foto de perfil ---------- */
+  // O app manda a imagem já recortada e reduzida (256 px), como corpo bruto da requisição.
+  app.addContentTypeParser(["image/png", "image/jpeg", "image/gif", "image/webp", "application/octet-stream"], { parseAs: "buffer" }, (_request, body, done) =>
+    done(null, body),
+  );
+  const announceUser = (user: User) => gateway.dispatchToUsers([user.id, ...store.peersOf(user.id)], { t: "USER_UPDATE", d: user });
+
+  app.put("/api/users/@me/avatar", { bodyLimit: LIMITS.avatarMaxBytes }, async (request) => {
+    const { user } = authenticate(request);
+    limit(actionLimiter, `action:${user.id}`);
+    const bytes = request.body;
+    if (!Buffer.isBuffer(bytes) || bytes.length === 0) throw new HttpError(400, "invalid_request", "Envie a imagem da foto.");
+    const contentType = detectImageType(bytes);
+    if (!contentType) throw new HttpError(415, "unsupported_type", "Esse arquivo não é uma imagem PNG, JPEG, WebP ou GIF.");
+    const id = nextId();
+    await files.write(id, bytes);
+    store.createFile({ id, ownerId: user.id, kind: "avatar", contentType, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"), createdAt: Date.now() });
+    const previous = store.setAvatar(user.id, id);
+    if (previous) {
+      store.deleteFile(previous);
+      await files.remove(previous);
+    }
+    const updated = store.getUser(user.id)!;
+    announceUser(updated);
+    return updated;
+  });
+
+  app.delete("/api/users/@me/avatar", async (request) => {
+    const { user } = authenticate(request);
+    limit(actionLimiter, `action:${user.id}`);
+    const previous = store.setAvatar(user.id, null);
+    if (previous) {
+      store.deleteFile(previous);
+      await files.remove(previous);
+    }
+    const updated = store.getUser(user.id)!;
+    if (previous) announceUser(updated);
+    return updated;
+  });
+
+  // Fotos de perfil são públicas (como em qualquer app de chat). O id nunca muda de conteúdo: cache longo.
+  app.get<{ Params: { fileId: string } }>("/api/files/:fileId", async (request, reply) => {
+    const file = isValidId(request.params.fileId) ? store.getFile(request.params.fileId) : undefined;
+    if (!file || file.kind !== "avatar") throw new HttpError(404, "not_found", "Arquivo não encontrado.");
+    const bytes = await files.read(file.id).catch(() => null);
+    if (!bytes) throw new HttpError(404, "not_found", "Arquivo não encontrado.");
+    return reply
+      .header("Content-Type", file.contentType)
+      .header("X-Content-Type-Options", "nosniff")
+      .header("Content-Security-Policy", "default-src 'none'; sandbox")
+      .header("Cross-Origin-Resource-Policy", "cross-origin")
+      .header("Cache-Control", "public, max-age=31536000, immutable")
+      .header("Content-Disposition", "inline")
+      .send(bytes);
+  });
+
+  /* ---------- amigos, pedidos e bloqueios ---------- */
+  const friendLimiter = new RateLimiter(20, 60_000);
+  /** Avisa os dois lados (cada um vê a sua relação). */
+  const announceRelationship = (userId: Id, target: User, type: RelationshipType | null, since = Date.now()) =>
+    gateway.dispatchToUser(userId, { t: "RELATIONSHIP_UPDATE", d: { user: target, type, since, online: type !== null && type !== "blocked" && gateway.isOnline(target.id) } });
+  const setBoth = (me: User, other: User, mine: RelationshipType | null, theirs: RelationshipType | null) => {
+    const since = Date.now();
+    store.setRelationship(me.id, other.id, mine, since);
+    store.setRelationship(other.id, me.id, theirs, since);
+    announceRelationship(me.id, other, mine, since);
+    announceRelationship(other.id, me, theirs, since);
+  };
+  const relationshipOf = (me: User, other: User): Relationship => ({
+    user: other,
+    type: store.relationshipOf(me.id, other.id)!,
+    since: Date.now(),
+    online: gateway.isOnline(other.id),
+  });
+
+  app.get("/api/users/@me/relationships", async (request) => {
+    const { user } = authenticate(request);
+    return store.relationshipsOf(user.id, gateway);
+  });
+
+  // Pedido de amizade por @usuário (ou id). Se a outra pessoa já tinha pedido, vira amizade.
+  app.post("/api/users/@me/relationships", async (request, reply) => {
+    const { user } = authenticate(request);
+    limit(friendLimiter, `friend:${user.id}`);
+    const body = friendRequestBody.parse(request.body ?? {});
+    const target = "username" in body ? store.findUserByUsername(body.username) : isValidId(body.userId) ? store.getUser(body.userId) : undefined;
+    if (!target) throw new HttpError(404, "user_not_found", "Não achamos ninguém com esse usuário. Confira o @ (letras minúsculas, sem espaços).");
+    if (target.id === user.id) throw new HttpError(400, "invalid_request", "Esse é você.");
+    const mine = store.relationshipOf(user.id, target.id);
+    if (mine === "blocked") throw new HttpError(400, "blocked", "Você bloqueou essa pessoa. Desbloqueie antes de pedir amizade.");
+    // quem me bloqueou não fica sabendo do pedido; a resposta é genérica para não revelar o bloqueio
+    if (store.relationshipOf(target.id, user.id) === "blocked") throw new HttpError(400, "request_failed", "Não foi possível enviar o pedido de amizade.");
+    if (mine === "friend") throw new HttpError(400, "already_friends", `Você e ${target.displayName} já são amigos.`);
+    if (mine === "incoming") setBoth(user, target, "friend", "friend");
+    else if (mine !== "outgoing") setBoth(user, target, "outgoing", "incoming");
+    return reply.status(200).send(relationshipOf(user, target));
+  });
+
+  // Aceitar pedido ("friend") ou bloquear ("blocked").
+  app.put<{ Params: { userId: string } }>("/api/users/@me/relationships/:userId", async (request) => {
+    const { user } = authenticate(request);
+    limit(friendLimiter, `friend:${user.id}`);
+    const target = isValidId(request.params.userId) ? store.getUser(request.params.userId) : undefined;
+    if (!target || target.id === user.id) throw new HttpError(404, "user_not_found", "Pessoa não encontrada.");
+    const { type } = relationshipBody.parse(request.body ?? {});
+    const mine = store.relationshipOf(user.id, target.id);
+    const theirs = store.relationshipOf(target.id, user.id);
+    if (type === "friend") {
+      if (mine === "friend") return relationshipOf(user, target);
+      if (mine !== "incoming") throw new HttpError(400, "no_request", "Não há pedido de amizade dessa pessoa para aceitar.");
+      setBoth(user, target, "friend", "friend");
+    } else if (mine !== "blocked") {
+      // bloquear desfaz amizade e pedidos; se a outra pessoa também me bloqueou, o bloqueio dela fica
+      setBoth(user, target, "blocked", theirs === "blocked" ? "blocked" : null);
+    }
+    return relationshipOf(user, target);
+  });
+
+  // Desfazer: cancelar ou recusar pedido, desfazer amizade, desbloquear.
+  app.delete<{ Params: { userId: string } }>("/api/users/@me/relationships/:userId", async (request, reply) => {
+    const { user } = authenticate(request);
+    limit(friendLimiter, `friend:${user.id}`);
+    const target = isValidId(request.params.userId) ? store.getUser(request.params.userId) : undefined;
+    if (!target) throw new HttpError(404, "user_not_found", "Pessoa não encontrada.");
+    const mine = store.relationshipOf(user.id, target.id);
+    if (mine === null) return reply.status(204).send();
+    if (mine === "blocked") {
+      store.setRelationship(user.id, target.id, null);
+      announceRelationship(user.id, target, null);
+    } else {
+      const theirs = store.relationshipOf(target.id, user.id);
+      setBoth(user, target, null, theirs === "blocked" ? "blocked" : null);
+    }
+    return reply.status(204).send();
+  });
+
+  app.get("/api/users/@me/settings", async (request) => {
+    const { user } = authenticate(request);
+    return { dmPolicy: store.dmPolicyOf(user.id) };
+  });
+
+  app.patch("/api/users/@me/settings", async (request) => {
+    const { user } = authenticate(request);
+    const { dmPolicy } = settingsBody.parse(request.body ?? {});
+    store.setDmPolicy(user.id, dmPolicy);
+    return { dmPolicy };
+  });
+
+  /* ---------- conversas diretas ---------- */
+  const dmFor = (channelId: Id, viewerId: Id): DmChannel => store.dmChannelFor(channelId, viewerId)!;
+  /** Conversa a dois que alguém fechou volta a aparecer quando chega mensagem nova. */
+  const reopenDm = (channelId: Id) => {
+    for (const userId of store.hiddenRecipientsOf(channelId)) {
+      store.setDmOpen(channelId, userId, true);
+      gateway.dispatchToUser(userId, { t: "DM_CHANNEL_CREATE", d: dmFor(channelId, userId) });
+    }
+  };
+  /** Todo mundo do grupo recebe a conversa como ela é para si. */
+  const announceDm = (channelId: Id, t: "DM_CHANNEL_CREATE" | "DM_CHANNEL_UPDATE") => {
+    for (const userId of store.recipientIdsOf(channelId)) gateway.dispatchToUser(userId, { t, d: dmFor(channelId, userId) });
+  };
+  /** Conversa direta da qual o usuário participa (404 se não). */
+  const myDm = (channelId: string, userId: Id) => {
+    const channel = isValidId(channelId) ? store.getConversation(channelId) : undefined;
+    if (!channel?.dm || !channel.dm.recipientIds.includes(userId)) throw new HttpError(404, "not_found", "Conversa não encontrada.");
+    return channel as ServerChannel & { dm: NonNullable<ServerChannel["dm"]> };
+  };
+
+  // Abrir conversa: com 1 pessoa é a conversa a dois (a mesma sempre); com mais, um grupo novo.
+  app.post("/api/users/@me/channels", async (request, reply) => {
+    const { user } = authenticate(request);
+    limit(actionLimiter, `action:${user.id}`);
+    const body = dmCreateBody.parse(request.body ?? {});
+    const ids = [...new Set(body.recipientIds)].filter((id) => id !== user.id);
+    const people = ids.map((id) => (isValidId(id) ? store.getUser(id) : undefined));
+    if (ids.length === 0 || people.some((p) => !p)) throw new HttpError(404, "user_not_found", "Pessoa não encontrada.");
+    if (ids.length === 1) {
+      const other = people[0]!;
+      if (store.isBlockedEither(user.id, other.id)) throw new HttpError(403, "dm_blocked", "Não dá para conversar com essa pessoa: uma de vocês bloqueou a outra.");
+      const friends = store.relationshipOf(user.id, other.id) === "friend";
+      const allowed = friends || (store.dmPolicyOf(other.id) === "servers" && store.sharesGuild(user.id, other.id));
+      if (!allowed) {
+        throw new HttpError(403, "dm_not_allowed", `${other.displayName} só recebe mensagens diretas de amigos (ou de quem divide servidor). Mande um pedido de amizade.`);
+      }
+      const id = store.findDm(user.id, other.id) ?? store.createDm(user.id, other.id);
+      store.setDmOpen(id, user.id, true);
+      const dm = dmFor(id, user.id);
+      gateway.dispatchToUser(user.id, { t: "DM_CHANNEL_CREATE", d: dm });
+      return reply.status(200).send(dm);
+    }
+    for (const p of people) {
+      if (store.relationshipOf(user.id, p!.id) !== "friend") throw new HttpError(403, "not_friends", `Só dá para pôr amigos num grupo. Você e ${p!.displayName} ainda não são amigos.`);
+    }
+    const id = store.createGroupDm(user.id, ids, body.name || null);
+    announceDm(id, "DM_CHANNEL_CREATE");
+    return reply.status(201).send(dmFor(id, user.id));
+  });
+
+  // Renomear o grupo (qualquer pessoa do grupo; vazio = nomes das pessoas).
+  app.patch<{ Params: { channelId: string } }>("/api/dms/:channelId", async (request) => {
+    const { user } = authenticate(request);
+    limit(actionLimiter, `action:${user.id}`);
+    const dm = myDm(request.params.channelId, user.id);
+    if (dm.dm.type !== "group_dm") throw new HttpError(400, "invalid_request", "Só grupos têm nome.");
+    const { name } = groupNameBody.parse(request.body ?? {});
+    store.renameGroupDm(dm.id, name || null);
+    announceDm(dm.id, "DM_CHANNEL_UPDATE");
+    return dmFor(dm.id, user.id);
+  });
+
+  // Fechar a conversa a dois (some da minha lista até chegar mensagem nova) ou sair do grupo.
+  app.delete<{ Params: { channelId: string } }>("/api/dms/:channelId", async (request, reply) => {
+    const { user } = authenticate(request);
+    const dm = myDm(request.params.channelId, user.id);
+    if (dm.dm.type === "dm") store.setDmOpen(dm.id, user.id, false);
+    else if (!store.removeRecipient(dm.id, user.id).deleted) announceDm(dm.id, "DM_CHANNEL_UPDATE");
+    gateway.dispatchToUser(user.id, { t: "DM_CHANNEL_DELETE", d: { id: dm.id } });
+    return reply.status(204).send();
+  });
+
+  // Pôr alguém no grupo (amigo de quem põe; até 10 pessoas).
+  app.put<{ Params: { channelId: string; userId: string } }>("/api/dms/:channelId/recipients/:userId", async (request) => {
+    const { user } = authenticate(request);
+    limit(actionLimiter, `action:${user.id}`);
+    const dm = myDm(request.params.channelId, user.id);
+    if (dm.dm.type !== "group_dm") throw new HttpError(400, "invalid_request", "Para conversar com mais gente, crie um grupo.");
+    const target = isValidId(request.params.userId) ? store.getUser(request.params.userId) : undefined;
+    if (!target) throw new HttpError(404, "user_not_found", "Pessoa não encontrada.");
+    if (dm.dm.recipientIds.includes(target.id)) return dmFor(dm.id, user.id);
+    if (store.relationshipOf(user.id, target.id) !== "friend") throw new HttpError(403, "not_friends", `Só dá para pôr amigos no grupo. Você e ${target.displayName} ainda não são amigos.`);
+    if (dm.dm.recipientIds.length >= LIMITS.groupDmMax) throw new HttpError(400, "group_full", `O grupo já tem ${LIMITS.groupDmMax} pessoas.`);
+    store.addRecipient(dm.id, target.id);
+    announceDm(dm.id, "DM_CHANNEL_UPDATE");
+    gateway.dispatchToUser(target.id, { t: "DM_CHANNEL_CREATE", d: dmFor(dm.id, target.id) });
+    return dmFor(dm.id, user.id);
+  });
+
+  // Tirar do grupo: o dono tira qualquer um; cada um pode sair (é o DELETE /api/dms/:id).
+  app.delete<{ Params: { channelId: string; userId: string } }>("/api/dms/:channelId/recipients/:userId", async (request, reply) => {
+    const { user } = authenticate(request);
+    limit(actionLimiter, `action:${user.id}`);
+    const dm = myDm(request.params.channelId, user.id);
+    const targetId = request.params.userId;
+    if (dm.dm.type !== "group_dm" || !dm.dm.recipientIds.includes(targetId)) throw new HttpError(404, "not_found", "Essa pessoa não está no grupo.");
+    if (targetId !== user.id && dm.dm.ownerId !== user.id) throw new HttpError(403, "owner_only", "Só quem criou o grupo pode tirar pessoas.");
+    const { deleted } = store.removeRecipient(dm.id, targetId);
+    gateway.dispatchToUser(targetId, { t: "DM_CHANNEL_DELETE", d: { id: dm.id } });
+    if (!deleted) announceDm(dm.id, "DM_CHANNEL_UPDATE");
+    return reply.status(204).send();
   });
 
   // Troca de senha: confere a atual e encerra as sessões dos outros aparelhos (esta continua).
@@ -931,7 +1250,7 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
 
   app.get<{ Params: { channelId: string } }>("/api/channels/:channelId/messages", async (request) => {
     const { user } = authenticate(request);
-    const channel = memberChannel(request.params.channelId, user.id);
+    const channel = chatChannel(request.params.channelId, user.id);
     if (channel.type !== "text") throw new HttpError(400, "invalid_request", "Canais de voz não têm mensagens.");
     const query = pageQuery.parse(request.query);
     const before = query.before && isValidId(query.before) ? query.before : null;
@@ -940,11 +1259,16 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
 
   app.post<{ Params: { channelId: string } }>("/api/channels/:channelId/messages", async (request, reply) => {
     const { user } = authenticate(request);
-    const channel = memberChannel(request.params.channelId, user.id);
+    const channel = chatChannel(request.params.channelId, user.id);
     if (channel.type !== "text") throw new HttpError(400, "invalid_request", "Canais de voz não têm mensagens.");
     requireChannelPermission(channel, user.id, "SEND_MESSAGES");
     limit(messageLimiter, `msg:${user.id}`);
     const body = messageBody.parse(request.body);
+    const attachmentIds = [...new Set(body.attachmentIds ?? [])];
+    if (!body.content && attachmentIds.length === 0) throw new HttpError(400, "invalid_request", "A mensagem está vazia.");
+    if (attachmentIds.length > 0 && store.pendingAttachments(attachmentIds.filter(isValidId), user.id, channel.id).length !== attachmentIds.length) {
+      throw new HttpError(400, "attachment_not_found", "Um dos arquivos não foi encontrado (pode ter expirado). Envie de novo.");
+    }
     let replyAuthorId: Id | null = null;
     if (body.replyToId !== undefined) {
       const original = isValidId(body.replyToId) ? store.getMessage(body.replyToId) : undefined;
@@ -952,9 +1276,10 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
       replyAuthorId = original.author.id;
     }
     const mentions = mentionsFor(channel, body.content, replyAuthorId, user.id);
-    const created = store.createMessage(channel.id, user, body.content, body.replyToId ?? null, mentions);
+    const created = store.createMessage(channel.id, user, body.content, body.replyToId ?? null, mentions, attachmentIds);
     store.ack(user.id, channel.id, created.id); // o que eu escrevi já está lido
     const message = { ...created, ...(body.nonce ? { nonce: body.nonce } : {}) };
+    if (channel.dm) reopenDm(channel.id);
     gateway.dispatchToChannel(channel, { t: "MESSAGE_CREATE", d: message });
     return reply.status(201).send(message);
   });
@@ -963,7 +1288,7 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     const { user } = authenticate(request);
     const message = isValidId(request.params.messageId) ? store.getMessage(request.params.messageId) : undefined;
     if (!message) throw new HttpError(404, "not_found", "Mensagem não encontrada.");
-    const channel = memberChannel(message.channelId, user.id);
+    const channel = chatChannel(message.channelId, user.id);
     if (message.author.id !== user.id) throw new HttpError(403, "forbidden", "Você só pode editar as suas mensagens.");
     const { content } = editBody.parse(request.body);
     const updated = store.updateMessage(message.id, content, mentionsFor(channel, content, message.replyTo?.author?.id, user.id))!;
@@ -975,13 +1300,71 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     const { user } = authenticate(request);
     const message = isValidId(request.params.messageId) ? store.getMessage(request.params.messageId) : undefined;
     if (!message) throw new HttpError(404, "not_found", "Mensagem não encontrada.");
-    const channel = memberChannel(message.channelId, user.id);
+    const channel = chatChannel(message.channelId, user.id);
     if (message.author.id !== user.id && !hasPermission(store.channelPermissionsOf(channel, user.id), "MANAGE_MESSAGES")) {
       throw new HttpError(403, "forbidden", "Você só pode apagar as suas mensagens.");
     }
+    const attached = store.attachmentIdsOf(message.id);
     store.deleteMessage(message.id);
+    for (const fileId of attached) {
+      store.deleteFile(fileId);
+      await files.remove(fileId);
+    }
     gateway.dispatchToChannel(channel, { t: "MESSAGE_DELETE", d: { id: message.id, channelId: channel.id } });
     return reply.status(204).send();
+  });
+
+  /* ---------- anexos ---------- */
+  // O app envia cada arquivo assim que é escolhido (com progresso); a mensagem depois só cita os ids.
+  app.post<{ Params: { channelId: string } }>("/api/channels/:channelId/attachments", { bodyLimit: LIMITS.attachmentMaxBytes }, async (request, reply) => {
+    const { user } = authenticate(request);
+    const channel = chatChannel(request.params.channelId, user.id);
+    if (channel.type !== "text") throw new HttpError(400, "invalid_request", "Canais de voz não têm mensagens.");
+    requireChannelPermission(channel, user.id, "SEND_MESSAGES");
+    limit(uploadLimiter, `upload:${user.id}`);
+    const bytes = request.body;
+    if (!Buffer.isBuffer(bytes) || bytes.length === 0) throw new HttpError(400, "invalid_request", "O arquivo está vazio.");
+    const query = uploadQuery.parse(request.query);
+    const image = detectImageType(bytes);
+    const file = {
+      id: nextId(),
+      ownerId: user.id,
+      kind: "attachment" as const,
+      // imagem só com o tipo conferido pelos bytes; o resto sempre como download
+      contentType: image ?? "application/octet-stream",
+      size: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      createdAt: Date.now(),
+      filename: cleanFilename(query.filename, LIMITS.filenameMax),
+      channelId: channel.id,
+      messageId: null,
+      width: image ? (query.width ?? null) : null,
+      height: image ? (query.height ?? null) : null,
+    };
+    await files.write(file.id, bytes);
+    store.createFile(file);
+    return reply.status(201).send({ id: file.id, filename: file.filename, size: file.size, contentType: file.contentType, width: file.width, height: file.height, url: "" });
+  });
+
+  // Link assinado (vem junto da mensagem, só para quem vê o canal). Sem login: <img> não manda o token.
+  app.get<{ Params: { fileId: string; filename: string }; Querystring: { ex?: string; sig?: string } }>("/api/attachments/:fileId/:filename", async (request, reply) => {
+    const { fileId } = request.params;
+    const valid = isValidId(fileId) && verifyAttachment(store.attachmentSecret, fileId, request.query.ex, request.query.sig);
+    const file = valid ? store.getFile(fileId) : undefined;
+    if (!file || file.kind !== "attachment" || file.messageId == null) throw new HttpError(404, "not_found", "Arquivo não encontrado ou link vencido. Abra a mensagem de novo para ter um link novo.");
+    const bytes = await files.read(file.id).catch(() => null);
+    if (!bytes) throw new HttpError(404, "not_found", "Arquivo não encontrado.");
+    const inline = file.contentType.startsWith("image/");
+    const name = file.filename ?? "arquivo";
+    const ascii = name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+    return reply
+      .header("Content-Type", file.contentType)
+      .header("X-Content-Type-Options", "nosniff")
+      .header("Content-Security-Policy", "default-src 'none'; sandbox")
+      .header("Cross-Origin-Resource-Policy", "cross-origin")
+      .header("Cache-Control", "private, max-age=3600")
+      .header("Content-Disposition", `${inline ? "inline" : "attachment"}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`)
+      .send(bytes);
   });
 
   /* ---------- reações ---------- */

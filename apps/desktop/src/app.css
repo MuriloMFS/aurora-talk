@@ -152,6 +152,14 @@ ul {
 .avatar--sm { width: var(--avatar-sm); height: var(--avatar-sm); }
 .avatar--md { width: var(--avatar-md); height: var(--avatar-md); }
 .avatar--lg { width: var(--avatar-lg); height: var(--avatar-lg); font-size: var(--text-sm); }
+.avatar--xl { width: var(--avatar-xl); height: var(--avatar-xl); font-size: var(--text-2xl); }
+/* foto de perfil: cobre o círculo; o ponto de presença continua por cima */
+.avatar__img {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+}
 .avatar[data-avatar="0"] { background: var(--avatar-0); }
 .avatar[data-avatar="1"] { background: var(--avatar-1); }
 .avatar[data-avatar="2"] { background: var(--avatar-2); }

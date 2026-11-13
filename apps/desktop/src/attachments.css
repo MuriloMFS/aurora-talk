@@ -1,0 +1,262 @@
+/* Anexos: na mensagem, tela cheia, fila de envio e arrastar. SOMENTE tokens — docs/design/guia-visual.md. */
+
+/* ---------- na mensagem ---------- */
+.attachments {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+.attachment-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, calc(var(--media-max-width) / 2)));
+  gap: var(--space-2);
+  max-width: var(--media-max-width);
+}
+.attachment-grid--single {
+  grid-template-columns: minmax(0, var(--media-max-width));
+}
+.attachment-image {
+  display: block;
+  padding: 0;
+  overflow: hidden;
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-hover);
+  cursor: zoom-in;
+}
+.attachment-image img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: var(--media-max-height);
+  object-fit: cover;
+}
+/* várias imagens: cada uma num quadrado (corta as bordas; a tela cheia mostra inteira) */
+.attachment-grid:not(.attachment-grid--single) .attachment-image img {
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+}
+.attachment-grid--single .attachment-image {
+  justify-self: start;
+}
+.attachment-grid--single .attachment-image img {
+  width: auto;
+  max-width: 100%;
+  object-fit: contain;
+}
+.attachment-image:focus-visible {
+  outline: var(--ring-width) solid var(--focus-ring);
+  outline-offset: var(--ring-offset);
+}
+.file-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  width: min(100%, var(--file-card-width));
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-width) solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}
+.file-card__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.file-card__name {
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  font-weight: var(--weight-medium);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.file-card__name:hover {
+  text-decoration: underline;
+}
+.file-card__size {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- tela cheia ---------- */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: grid;
+  place-items: center;
+  padding: var(--space-10) var(--space-9);
+}
+.lightbox__scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-rail);
+  opacity: 0.97;
+}
+.lightbox__img {
+  position: relative;
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-elevated);
+}
+.lightbox__bar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-5);
+  color: var(--text-primary);
+}
+.lightbox__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lightbox__nav {
+  position: absolute;
+  top: 50%;
+  z-index: 1;
+  transform: translateY(-50%);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-elevated);
+}
+.lightbox__nav--prev {
+  left: var(--space-5);
+}
+.lightbox__nav--next {
+  right: var(--space-5);
+}
+
+/* ---------- compositor: botão +, fila e arrastar ---------- */
+.composer__attach {
+  flex: none;
+  align-self: flex-end;
+}
+.upload-queue {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.upload-queue__notice {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+.upload-queue__list {
+  display: flex;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0 0 var(--space-2);
+  overflow-x: auto;
+  list-style: none;
+}
+.upload-item {
+  position: relative;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: calc(var(--space-10) * 2 + var(--space-5));
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+.upload-item--error {
+  border-color: var(--danger);
+}
+.upload-item__thumb {
+  width: 100%;
+  height: var(--space-10);
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+}
+.upload-item__icon {
+  height: var(--space-10);
+  align-self: center;
+  color: var(--text-secondary);
+}
+.upload-item__name {
+  overflow: hidden;
+  padding-right: var(--space-5);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.upload-item__meta {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+}
+.upload-item__meta--error {
+  color: var(--danger);
+}
+.upload-item__progress {
+  width: 100%;
+  height: var(--space-2);
+  accent-color: var(--accent);
+}
+.upload-item__remove {
+  position: absolute;
+  top: var(--space-1);
+  right: var(--space-1);
+  background: var(--bg-elevated);
+}
+.chat {
+  position: relative;
+}
+.drop-overlay {
+  position: absolute;
+  inset: var(--space-3);
+  z-index: var(--z-overlay);
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: var(--space-3);
+  border: var(--ring-width) dashed var(--accent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--bg-chat) 90%, transparent);
+  color: var(--text-primary);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  pointer-events: none;
+}
+
+@media (max-width: 599px) {
+  .lightbox {
+    padding: var(--space-10) var(--space-3);
+  }
+  .attachment-grid {
+    max-width: 100%;
+  }
+}
+@media (forced-colors: active) {
+  .drop-overlay,
+  .file-card,
+  .upload-item {
+    border-color: CanvasText;
+  }
+}

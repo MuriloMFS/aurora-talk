@@ -1,10 +1,16 @@
-import { GATEWAY_PATH, GATEWAY_VERSION, type ClientFrame, type DispatchEvent, type Guild, type Id, type ReadState, type ServerFrame, type User } from "@aurora/schema";
+import { GATEWAY_PATH, GATEWAY_VERSION, type ClientFrame, type DispatchEvent, type Guild, type Id, type ReadState, type ServerFrame, type User, type DmChannel, type Relationship, type UserSettings } from "@aurora/schema";
 
 export type ConnectionStatus = "connecting" | "ready" | "reconnecting";
+/** O que veio no READY além de servidores e leitura (1.9: conversas diretas, amigos, preferências). */
+export interface ReadyExtra {
+  privateChannels?: DmChannel[];
+  relationships?: Relationship[];
+  settings?: UserSettings;
+}
 
 export interface GatewayHandlers {
   onStatus(status: ConnectionStatus): void;
-  onReady(user: User, guilds: Guild[], readStates: ReadState[] | undefined): void;
+  onReady(user: User, guilds: Guild[], readStates: ReadState[] | undefined, extra: ReadyExtra): void;
   onDispatch(event: DispatchEvent): void;
   onInvalidSession(reason: string): void;
 }
@@ -82,7 +88,11 @@ export class GatewayClient {
         case "ready":
           this.attempt = 0;
           this.handlers.onStatus("ready");
-          this.handlers.onReady(frame.user, frame.guilds, frame.readStates);
+          this.handlers.onReady(frame.user, frame.guilds, frame.readStates, {
+            privateChannels: frame.privateChannels,
+            relationships: frame.relationships,
+            settings: frame.settings,
+          });
           break;
         case "heartbeat_ack":
           this.awaitingAck = false;

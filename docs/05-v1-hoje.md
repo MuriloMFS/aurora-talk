@@ -112,6 +112,22 @@
   - Castigo: só ler até a hora marcada (sai da voz; não escapa saindo e voltando).
   - Na voz: silenciar para todos, mover para outra sala e desconectar (menu "…" em quem está na sala).
   - Criar canal já como privado.
+- **1.7.0** — **foto de perfil** (fase A do [10](10-recursos-basicos.md)):
+  - Escolher, ver a prévia, trocar e remover a foto em Minha conta. O app corta o quadrado central e reduz para 256 px antes de enviar.
+  - A foto aparece na hora para quem divide servidor (mensagens, voz, membros); sem foto, continua o avatar de iniciais.
+  - Servidor: arquivos em `data/files/`, tipo conferido pelos bytes (PNG, JPEG, WebP, GIF; nada de SVG), limite de 2 MB, entregue com `nosniff` e cache longo.
+- **1.8.0** — **imagens e arquivos nas mensagens** (fase B do [10](10-recursos-basicos.md)):
+  - Até 10 arquivos por mensagem, 25 MB cada, pelo botão **+**, arrastando para o chat ou com **Ctrl+V** (print). Cada arquivo sobe ao entrar na fila (com progresso); dá para mandar só o anexo, sem texto.
+  - Imagens na conversa (em grade, na ordem escolhida) e em tela cheia (setas trocam, Esc fecha, abrir no navegador para salvar); outros arquivos viram cartão com nome, tamanho e baixar.
+  - Sigilo: o link do anexo é assinado e vence em ~1 dia; só quem vê o canal recebe. Imagem só é mostrada se os bytes forem de imagem; o resto sempre vai como download.
+  - Apagar a mensagem apaga o arquivo; o que ficou sem mensagem (envio abandonado, canal apagado) é limpo em até 1 h.
+- **1.9.0** — **amigos, bloqueio e mensagens diretas** (fase C do [10](10-recursos-basicos.md)):
+  - Botão **Início** no topo da barra de servidores: lista de amigos (Online, Todos, Pendentes, Bloqueados) e "Adicionar amigo" pelo @usuário.
+  - Conversas a dois e em grupo (até 10 pessoas, só com amigos): renomear, pôr gente, sair; quem criou pode tirar pessoas. Tudo do chat vale nelas (respostas, reações, menções, anexos, não lidas, digitando) e toda mensagem direta conta como menção.
+  - Mandar mensagem e pedir amizade direto da lista de membros de um servidor.
+  - Bloquear: a pessoa não manda mensagem direta nem pede amizade (sem ser avisada), e as mensagens dela nos servidores ficam recolhidas ("Mostrar").
+  - Minha conta → Mensagens diretas: aceitar de quem divide servidor (padrão) ou só de amigos.
+  - Servidor: conversas diretas são canais sem servidor (a tabela de canais foi refeita na migração, sem perder mensagens); quem está fora da conversa recebe 404 em tudo.
 
 ## O que fica para depois (ordem sugerida)
 escolha de microfone/fone · DMs e amigos · anexos e prévia de links · cargos e permissões (pacote `permissions` do doc 03) · lista virtualizada para canais grandes · servidor hospedado (VPS) com HTTPS · depois, o restante do roadmap.

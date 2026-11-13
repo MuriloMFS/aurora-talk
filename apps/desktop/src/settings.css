@@ -455,3 +455,18 @@
     background: Highlight;
   }
 }
+
+/* ---------- foto de perfil: prévia antes de salvar ---------- */
+.avatar-preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-5);
+}
+.avatar-preview__img {
+  width: var(--avatar-xl);
+  height: var(--avatar-xl);
+  border-radius: var(--radius-full);
+  object-fit: cover;
+  box-shadow: 0 0 0 var(--border-width) var(--border-strong);
+}

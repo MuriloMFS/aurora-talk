@@ -2,7 +2,7 @@ import type { WebSocket } from "ws";
 import { hasPermission, CLOSE_CODES, HEARTBEAT_INTERVAL_MS, V2_EVENTS, type Channel, type ClientFrame, type DispatchEvent, type Id, type ServerFrame, type VoiceState } from "@aurora/schema";
 import { hashToken } from "./auth.ts";
 import { RateLimiter } from "./rate-limit.ts";
-import type { LiveState, Store } from "./store.ts";
+import type { LiveState, ServerChannel, Store } from "./store.ts";
 
 const IDENTIFY_TIMEOUT_MS = 10_000;
 const OPEN = 1;
@@ -113,15 +113,29 @@ export class Gateway implements LiveState {
         const guilds = this.store.guildsOf(user.id, this);
         // leitura só dos canais que a pessoa vê (canal privado não aparece nem como "não lido")
         const visible = new Set(guilds.flatMap((g) => g.channels.map((c) => c.id)));
-        const readStates = this.store.readStatesOf(user.id).filter((r) => visible.has(r.channelId));
-        send(connection.version >= 2 ? { op: "ready", user, guilds, readStates } : { op: "ready", user, guilds });
+        const privateChannels = this.store.privateChannelsOf(user.id);
+        for (const dm of privateChannels) visible.add(dm.id);
+        const readStatesAll = this.store.readStatesOf(user.id).filter((r) => visible.has(r.channelId));
+        send(
+          connection.version >= 2
+            ? {
+                op: "ready",
+                user,
+                guilds,
+                readStates: readStatesAll,
+                privateChannels,
+                relationships: this.store.relationshipsOf(user.id, this),
+                settings: { dmPolicy: this.store.dmPolicyOf(user.id) },
+              }
+            : { op: "ready", user, guilds },
+        );
         if (first) this.broadcastPresence(user.id, true);
         return;
       }
       if (!connection) return; // demais operações exigem identify
       switch (frame.op) {
         case "typing": {
-          const channel = this.store.getChannel(frame.channelId);
+          const channel = this.store.getConversation(frame.channelId);
           if (!channel || channel.type !== "text") return;
           if (!hasPermission(this.store.channelPermissionsOf(channel, connection.userId), "SEND_MESSAGES")) return;
           if (!this.typingLimiter.allow(`${connection.userId}:${channel.id}`)) return;
@@ -193,7 +207,7 @@ export class Gateway implements LiveState {
   }
 
   /** Só para quem vê o canal (mensagens, reações, digitação e voz de canal privado não vazam). */
-  dispatchToChannel(channel: Channel, event: DispatchEvent, exceptUserId?: Id): void {
+  dispatchToChannel(channel: ServerChannel, event: DispatchEvent, exceptUserId?: Id): void {
     this.dispatchToUsers(this.store.channelViewerIds(channel), event, exceptUserId);
   }
 

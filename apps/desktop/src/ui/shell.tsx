@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import {
   ArrowRightLeft,
+  Home,
+  MessageCircle,
   Compass,
   Crown,
   Ellipsis,
@@ -22,15 +24,23 @@ import {
 import { isPrivateChannel, type Channel, type ChannelType, type Id, type Member, type Role, type User, type VoiceState } from "@aurora/schema";
 import type { GuildEntry } from "../state/chat-store";
 import { avatarIndex, initials } from "../messages";
+import { fileUrl } from "../avatar-image";
 import { memberColor, memberGroups } from "../roles";
 
 export const ICON = { size: 20, strokeWidth: 1.75, "aria-hidden": true } as const;
 export const ICON_SM = { size: 16, strokeWidth: 1.75, "aria-hidden": true } as const;
 
-export function Avatar({ user, size = "md", online, speaking }: { user: User; size?: "sm" | "md" | "lg"; online?: boolean; speaking?: boolean }) {
+export function Avatar({ user, size = "md", online, speaking }: { user: User; size?: "sm" | "md" | "lg" | "xl"; online?: boolean; speaking?: boolean }) {
+  // foto que não carregou (servidor fora, arquivo apagado): volta para as iniciais
+  const [failed, setFailed] = useState<string | null>(null);
+  const photo = user.avatar && user.avatar !== failed ? user.avatar : null;
   return (
     <span className={`avatar avatar--${size}${speaking ? " avatar--speaking" : ""}`} data-avatar={avatarIndex(user.id)}>
-      <span aria-hidden="true">{initials(user.displayName)}</span>
+      {photo ? (
+        <img className="avatar__img" src={fileUrl(photo)} alt="" draggable={false} onError={() => setFailed(photo)} />
+      ) : (
+        <span aria-hidden="true">{initials(user.displayName)}</span>
+      )}
       {online !== undefined && (
         <span className={`presence presence--${online ? "online" : "offline"}`} role="img" aria-label={online ? "Online" : "Offline"} />
       )}
@@ -43,6 +53,10 @@ export function Avatar({ user, size = "md", online, speaking }: { user: User; si
 interface RailProps {
   guilds: GuildEntry[];
   activeGuildId: Id | null;
+  /** Botão Início (amigos e conversas diretas). */
+  homeActive: boolean;
+  homeMentions: number;
+  onHome: () => void;
   unreadGuildIds: ReadonlySet<Id>;
   /** Menções não lidas por servidor. */
   guildMentions: Readonly<Record<Id, number>>;
@@ -55,12 +69,30 @@ interface RailProps {
 export const badgeCount = (n: number) => (n > 99 ? "99+" : String(n));
 const mentionLabel = (n: number) => (n === 1 ? "1 menção" : `${n} menções`);
 
-export function Rail({ guilds, activeGuildId, unreadGuildIds, guildMentions, onSelect, onCreate, onJoin }: RailProps) {
+export function Rail({ guilds, activeGuildId, homeActive, homeMentions, onHome, unreadGuildIds, guildMentions, onSelect, onCreate, onJoin }: RailProps) {
   return (
     <nav className="rail" aria-label="Servidores">
       <ul className="rail__list">
+        <li>
+          <button
+            type="button"
+            className="tile tile--home"
+            aria-label={["Início: amigos e mensagens diretas", homeMentions > 0 && mentionLabel(homeMentions)].filter(Boolean).join(", ")}
+            aria-current={homeActive ? "page" : undefined}
+            title="Início"
+            onClick={onHome}
+          >
+            <Home {...ICON} />
+            {homeMentions > 0 && (
+              <span className="badge badge--mention tile__badge" aria-hidden="true">
+                {badgeCount(homeMentions)}
+              </span>
+            )}
+          </button>
+        </li>
+        <li className="rail__separator" aria-hidden="true" />
         {guilds.map((guild) => {
-          const active = guild.id === activeGuildId;
+          const active = guild.id === activeGuildId && !homeActive;
           const unread = unreadGuildIds.has(guild.id) && !active;
           const mentions = guildMentions[guild.id] ?? 0;
           const label = [guild.name, mentions > 0 && mentionLabel(mentions), unread && "mensagens não lidas"].filter(Boolean).join(", ");
@@ -536,7 +568,7 @@ function VoicePanel({
   );
 }
 
-function UserPanel({ me, online, statusText, onOpenSettings }: SidebarProps) {
+export function UserPanel({ me, online, statusText, onOpenSettings }: Pick<SidebarProps, "me" | "online" | "statusText" | "onOpenSettings">) {
   return (
     <footer className="userpanel">
       <Avatar user={me} online={online} />
@@ -558,7 +590,24 @@ function UserPanel({ me, online, statusText, onOpenSettings }: SidebarProps) {
 /* ---------------- membros ---------------- */
 
 /** Membros agrupados pelos cargos "mostrar separado"; a cor do cargo vai num ponto ao lado do nome (guia §6.5). */
-export function MemberList({ members, ownerId, roles }: { members: Member[]; ownerId: Id; roles: readonly Role[] }) {
+export function MemberList({
+  members,
+  ownerId,
+  roles,
+  meId,
+  canAddFriend,
+  onMessage,
+  onAddFriend,
+}: {
+  members: Member[];
+  ownerId: Id;
+  roles: readonly Role[];
+  meId?: Id;
+  /** Ainda não somos amigos nem há pedido/bloqueio. */
+  canAddFriend?: (userId: Id) => boolean;
+  onMessage?: (user: User) => void;
+  onAddFriend?: (user: User) => void;
+}) {
   const groups = memberGroups(members, roles);
 
   return (
@@ -587,6 +636,20 @@ export function MemberList({ members, ownerId, roles }: { members: Member[]; own
                   </span>
                   <span className="member__activity">@{member.user.username}</span>
                 </div>
+                {member.user.id !== meId && (onMessage || onAddFriend) && (
+                  <span className="member__actions">
+                    {onMessage && (
+                      <button type="button" className="icon-button icon-button--small" aria-label={`Mandar mensagem para ${member.user.displayName}`} title="Mensagem" onClick={() => onMessage(member.user)}>
+                        <MessageCircle {...ICON_SM} />
+                      </button>
+                    )}
+                    {onAddFriend && canAddFriend?.(member.user.id) && (
+                      <button type="button" className="icon-button icon-button--small" aria-label={`Pedir amizade a ${member.user.displayName}`} title="Pedir amizade" onClick={() => onAddFriend(member.user)}>
+                        <UserPlus {...ICON_SM} />
+                      </button>
+                    )}
+                  </span>
+                )}
               </li>
               );
             })}

@@ -1,4 +1,5 @@
 import { networkInterfaces } from "node:os";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Gateway } from "./gateway.ts";
 import { SERVER_VERSION, buildApp } from "./http.ts";
@@ -30,7 +31,8 @@ const voice = {
 const turnKeyId = process.env.CLOUDFLARE_TURN_KEY_ID?.trim();
 const turnApiToken = process.env.CLOUDFLARE_TURN_API_TOKEN?.trim();
 const turn = turnKeyId && turnApiToken ? cloudflareTurn({ keyId: turnKeyId, apiToken: turnApiToken }) : undefined;
-const app = await buildApp({ store, gateway, logger: true, releasesDir, voice, turn, siteDir, trustCloudflare });
+const filesDir = join(dirname(dbPath), "files");
+const app = await buildApp({ store, gateway, logger: true, releasesDir, voice, turn, siteDir, filesDir, trustCloudflare });
 
 await app.listen({ port, host });
 

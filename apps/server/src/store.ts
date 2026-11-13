@@ -10,11 +10,16 @@ import {
   byPositionDesc,
   computeChannelPermissions,
   computePermissions,
+  type Attachment,
   type AuditAction,
   type AuditLogEntry,
   type Ban,
   type Channel,
   type ChannelType,
+  type DmChannel,
+  type DmPolicy,
+  type Relationship,
+  type RelationshipType,
   type Guild,
   type Id,
   type Invite,
@@ -32,6 +37,8 @@ import {
 } from "@aurora/schema";
 import { ID_EPOCH, ID_SEQUENCE_SIZE, nextId } from "./ids.ts";
 import { newInviteCode } from "./auth.ts";
+import { randomBytes } from "node:crypto";
+import { signAttachment } from "./files.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
@@ -49,8 +56,9 @@ CREATE TABLE IF NOT EXISTS members (
   joined_at INTEGER NOT NULL, PRIMARY KEY (guild_id, user_id));
 CREATE INDEX IF NOT EXISTS members_by_user ON members(user_id);
 CREATE TABLE IF NOT EXISTS channels (
-  id INTEGER PRIMARY KEY, guild_id INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
-  name TEXT NOT NULL, position INTEGER NOT NULL, type TEXT NOT NULL DEFAULT 'text');
+  id INTEGER PRIMARY KEY, guild_id INTEGER REFERENCES guilds(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, position INTEGER NOT NULL, type TEXT NOT NULL DEFAULT 'text',
+  owner_id INTEGER REFERENCES users(id) ON DELETE SET NULL, dm_key TEXT UNIQUE);
 CREATE INDEX IF NOT EXISTS channels_by_guild ON channels(guild_id, position);
 CREATE TABLE IF NOT EXISTS invites (
   code TEXT PRIMARY KEY, guild_id INTEGER NOT NULL REFERENCES guilds(id) ON DELETE CASCADE,
@@ -106,20 +114,79 @@ CREATE TABLE IF NOT EXISTS moderation (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   timeout_until INTEGER, server_muted INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (guild_id, user_id));
+-- 1.7: arquivos enviados (o conteúdo fica em disco, em data/files/<id>)
+CREATE TABLE IF NOT EXISTS files (
+  id INTEGER PRIMARY KEY, owner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  kind TEXT NOT NULL, content_type TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL,
+  created_at INTEGER NOT NULL);
+-- 1.8: segredos do servidor (assinatura dos links de anexo); colunas de anexo em files (migração)
+CREATE TABLE IF NOT EXISTS secrets (name TEXT PRIMARY KEY, value TEXT NOT NULL);
+-- 1.9: amigos/pedidos/bloqueios (cada lado tem a sua linha) e conversas diretas (canais sem servidor)
+CREATE TABLE IF NOT EXISTS relationships (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  target_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  type TEXT NOT NULL, since INTEGER NOT NULL, PRIMARY KEY (user_id, target_id));
+CREATE TABLE IF NOT EXISTS channel_recipients (
+  channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  joined_at INTEGER NOT NULL, open INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (channel_id, user_id));
+CREATE INDEX IF NOT EXISTS recipients_by_user ON channel_recipients(user_id);
 `;
 
-interface UserRow { id: number; username: string; display_name: string }
+interface UserRow { id: number; username: string; display_name: string; avatar_id: number | null }
+/** Canal visto pelo servidor: os de servidor (`Channel`) e as conversas diretas (`dm` preenchido, `guildId` vazio). */
+export type ServerChannel = Channel & { dm?: { type: "dm" | "group_dm"; recipientIds: Id[]; ownerId: Id | null } };
+const dmKeyOf = (a: Id, b: Id) => [a, b].sort((x, y) => Number(x) - Number(y)).join(":");
+
+export interface StoredFile {
+  id: Id;
+  ownerId: Id | null;
+  kind: "avatar" | "attachment";
+  contentType: string;
+  size: number;
+  sha256: string;
+  createdAt: number;
+  /** Só anexos: nome mostrado, canal onde foi enviado, mensagem (nula até enviar) e tamanho da imagem. */
+  filename?: string | null;
+  channelId?: Id | null;
+  messageId?: Id | null;
+  width?: number | null;
+  height?: number | null;
+}
+interface FileRow {
+  id: number; owner_id: number | null; kind: "avatar" | "attachment"; content_type: string; size: number; sha256: string; created_at: number;
+  filename: string | null; channel_id: number | null; message_id: number | null; width: number | null; height: number | null;
+}
+const FILE_COLUMNS = "id, owner_id, kind, content_type, size, sha256, created_at, filename, channel_id, message_id, width, height";
+const idOrNull = (n: number | null) => (n === null ? null : String(n));
+const toFile = (r: FileRow): StoredFile => ({
+  id: String(r.id),
+  ownerId: idOrNull(r.owner_id),
+  kind: r.kind,
+  contentType: r.content_type,
+  size: r.size,
+  sha256: r.sha256,
+  createdAt: r.created_at,
+  filename: r.filename,
+  channelId: idOrNull(r.channel_id),
+  messageId: idOrNull(r.message_id),
+  width: r.width,
+  height: r.height,
+});
 interface ChannelRow { id: number; guild_id: number; name: string; position: number; type: ChannelType }
 interface GuildRow { id: number; name: string; owner_id: number }
 interface MemberRow extends UserRow { joined_at: number }
 interface RoleRow { id: number; guild_id: number; name: string; color: number | null; position: number; permissions: number; hoist: number }
 interface OverwriteRow { channel_id: number; target_type: string; target_id: number; allow: number; deny: number }
 interface MessageRow {
-  id: number; channel_id: number; author_id: number; content: string; created_at: number; edited_at: number | null; username: string; display_name: string;
-  reply_to_id: number | null; reply_author_id: number | null; reply_username: string | null; reply_display_name: string | null; reply_content: string | null;
+  id: number; channel_id: number; author_id: number; content: string; created_at: number; edited_at: number | null; username: string; display_name: string; avatar_id: number | null;
+  reply_to_id: number | null; reply_author_id: number | null; reply_username: string | null; reply_display_name: string | null; reply_avatar_id: number | null; reply_content: string | null;
 }
 
-const toUser = (r: UserRow): User => ({ id: String(r.id), username: r.username, displayName: r.display_name });
+const avatarOf = (id: number | null | undefined): string | null => (id == null ? null : String(id));
+const toUser = (r: UserRow): User => ({ id: String(r.id), username: r.username, displayName: r.display_name, avatar: avatarOf(r.avatar_id) });
+/** Colunas de usuário (com o apelido `u`) usadas nas consultas que montam `User`. */
+const USER_COLUMNS = "u.id, u.username, u.display_name, u.avatar_id";
 const toChannel = (r: ChannelRow, overwrites: Overwrite[] = []): Channel => ({
   id: String(r.id),
   guildId: String(r.guild_id),
@@ -145,8 +212,8 @@ const toRole = (r: RoleRow): Role => ({
   hoist: r.hoist === 1,
 });
 const ROLE_COLUMNS = "id, guild_id, name, color, position, permissions, hoist";
-const userOrNull = (id: number | null, username: string | null, displayName: string | null): User | null =>
-  id === null || username === null ? null : { id: String(id), username, displayName: displayName ?? username };
+const userOrNull = (id: number | null, username: string | null, displayName: string | null, avatarId: number | null = null): User | null =>
+  id === null || username === null ? null : { id: String(id), username, displayName: displayName ?? username, avatar: avatarOf(avatarId) };
 
 const excerpt = (content: string) => (content.length > LIMITS.replyExcerptMax ? `${content.slice(0, LIMITS.replyExcerptMax - 1)}…` : content);
 
@@ -155,13 +222,13 @@ const toReference = (r: MessageRow): MessageReference | null => {
   const alive = r.reply_author_id !== null && r.reply_content !== null;
   return {
     id: String(r.reply_to_id),
-    author: alive ? { id: String(r.reply_author_id), username: r.reply_username!, displayName: r.reply_display_name! } : null,
+    author: alive ? { id: String(r.reply_author_id), username: r.reply_username!, displayName: r.reply_display_name!, avatar: avatarOf(r.reply_avatar_id) } : null,
     content: alive ? excerpt(r.reply_content!) : null,
   };
 };
 
-const MESSAGE_SELECT = `SELECT m.id, m.channel_id, m.author_id, m.content, m.created_at, m.edited_at, u.username, u.display_name,
-    m.reply_to_id, r.author_id AS reply_author_id, ru.username AS reply_username, ru.display_name AS reply_display_name, r.content AS reply_content
+const MESSAGE_SELECT = `SELECT m.id, m.channel_id, m.author_id, m.content, m.created_at, m.edited_at, u.username, u.display_name, u.avatar_id,
+    m.reply_to_id, r.author_id AS reply_author_id, ru.username AS reply_username, ru.display_name AS reply_display_name, ru.avatar_id AS reply_avatar_id, r.content AS reply_content
   FROM messages m JOIN users u ON u.id = m.author_id
   LEFT JOIN messages r ON r.id = m.reply_to_id LEFT JOIN users ru ON ru.id = r.author_id`;
 
@@ -188,7 +255,24 @@ export class Store {
   private migrate(): void {
     const columns = this.all<{ name: string }>("PRAGMA table_info(channels)").map((c) => c.name);
     if (!columns.includes("type")) this.db.exec("ALTER TABLE channels ADD COLUMN type TEXT NOT NULL DEFAULT 'text'");
+    this.allowChannelsWithoutGuild();
     // 1.3: respostas. Sem chave estrangeira de propósito: apagar a original não apaga as respostas.
+    // 1.8: anexos usam a mesma tabela de arquivos da 1.7
+    const fileColumns = this.all<{ name: string }>("PRAGMA table_info(files)").map((c) => c.name);
+    for (const [column, type] of [
+      ["filename", "TEXT"],
+      ["channel_id", "INTEGER"],
+      ["message_id", "INTEGER REFERENCES messages(id) ON DELETE SET NULL"],
+      ["width", "INTEGER"],
+      ["height", "INTEGER"],
+      ["position", "INTEGER"],
+    ] as const) {
+      if (!fileColumns.includes(column)) this.db.exec(`ALTER TABLE files ADD COLUMN ${column} ${type}`);
+    }
+    this.db.exec("CREATE INDEX IF NOT EXISTS files_by_message ON files(message_id)");
+    const userColumns = this.all<{ name: string }>("PRAGMA table_info(users)").map((c) => c.name);
+    if (!userColumns.includes("avatar_id")) this.db.exec("ALTER TABLE users ADD COLUMN avatar_id INTEGER");
+    if (!userColumns.includes("dm_policy")) this.db.exec("ALTER TABLE users ADD COLUMN dm_policy TEXT NOT NULL DEFAULT 'servers'");
     const messageColumns = this.all<{ name: string }>("PRAGMA table_info(messages)").map((c) => c.name);
     if (!messageColumns.includes("reply_to_id")) this.db.exec("ALTER TABLE messages ADD COLUMN reply_to_id INTEGER");
     // 1.5: todo servidor ganha o cargo @todos com as permissões padrão
@@ -208,6 +292,48 @@ export class Store {
 
   close(): void {
     this.db.close();
+  }
+
+  /**
+   * 1.9: conversas diretas são canais sem servidor. O SQLite não deixa tirar o NOT NULL de uma coluna,
+   * então a tabela é refeita (procedimento oficial: sem chaves estrangeiras durante a troca, conferindo
+   * no fim). Mensagens, leituras, sobrescritas e anexos continuam apontando para os mesmos ids.
+   */
+  private allowChannelsWithoutGuild(): void {
+    const guildColumn = this.all<{ name: string; notnull: number }>("PRAGMA table_info(channels)").find((c) => c.name === "guild_id");
+    if (!guildColumn || guildColumn.notnull === 0) return;
+    this.db.exec("PRAGMA foreign_keys = OFF");
+    try {
+      this.transaction(() => {
+        this.db.exec(`CREATE TABLE channels_new (
+          id INTEGER PRIMARY KEY, guild_id INTEGER REFERENCES guilds(id) ON DELETE CASCADE,
+          name TEXT NOT NULL, position INTEGER NOT NULL, type TEXT NOT NULL DEFAULT 'text',
+          owner_id INTEGER REFERENCES users(id) ON DELETE SET NULL, dm_key TEXT UNIQUE);
+          INSERT INTO channels_new (id, guild_id, name, position, type) SELECT id, guild_id, name, position, type FROM channels;
+          DROP TABLE channels;
+          ALTER TABLE channels_new RENAME TO channels;
+          CREATE INDEX IF NOT EXISTS channels_by_guild ON channels(guild_id, position);`);
+        const broken = this.all("PRAGMA foreign_key_check");
+        if (broken.length > 0) throw new Error(`migração dos canais deixou ${broken.length} referências quebradas`);
+      });
+    } finally {
+      this.db.exec("PRAGMA foreign_keys = ON");
+    }
+  }
+
+  /** Segredo aleatório do servidor (criado na primeira vez e guardado no banco). */
+  secret(name: string): string {
+    const existing = this.one<{ value: string }>("SELECT value FROM secrets WHERE name = ?", name)?.value;
+    if (existing) return existing;
+    const value = randomBytes(32).toString("base64url");
+    this.run("INSERT OR IGNORE INTO secrets (name, value) VALUES (?, ?)", name, value);
+    return this.one<{ value: string }>("SELECT value FROM secrets WHERE name = ?", name)!.value;
+  }
+
+  private attachmentSecretCache: string | null = null;
+  get attachmentSecret(): string {
+    this.attachmentSecretCache ??= this.secret("attachments");
+    return this.attachmentSecretCache;
   }
 
   private one<T>(sql: string, ...params: (string | number | null)[]): T | undefined {
@@ -248,11 +374,11 @@ export class Store {
   createUser(username: string, displayName: string, passwordHash: string): User {
     const id = nextId();
     this.run("INSERT INTO users (id, username, display_name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)", Number(id), username, displayName, passwordHash, Date.now());
-    return { id, username, displayName };
+    return { id, username, displayName, avatar: null };
   }
 
   findCredentials(username: string): { user: User; passwordHash: string } | undefined {
-    const row = this.one<UserRow & { password_hash: string }>("SELECT id, username, display_name, password_hash FROM users WHERE username = ?", username);
+    const row = this.one<UserRow & { password_hash: string }>("SELECT id, username, display_name, avatar_id, password_hash FROM users WHERE username = ?", username);
     return row ? { user: toUser(row), passwordHash: row.password_hash } : undefined;
   }
 
@@ -261,7 +387,7 @@ export class Store {
   }
 
   sessionUser(tokenHash: string): User | undefined {
-    const row = this.one<UserRow>("SELECT u.id, u.username, u.display_name FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?", tokenHash);
+    const row = this.one<UserRow>(`SELECT ${USER_COLUMNS} FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?`, tokenHash);
     return row ? toUser(row) : undefined;
   }
 
@@ -273,8 +399,66 @@ export class Store {
 
   updateDisplayName(userId: Id, displayName: string): User | undefined {
     this.run("UPDATE users SET display_name = ? WHERE id = ?", displayName, Number(userId));
-    const row = this.one<UserRow>("SELECT id, username, display_name FROM users WHERE id = ?", Number(userId));
-    return row ? toUser(row) : undefined;
+    return this.getUser(userId);
+  }
+
+  /* ---------- arquivos e foto de perfil ---------- */
+
+  createFile(file: StoredFile): void {
+    const n = (v: Id | null | undefined) => (v == null ? null : Number(v));
+    this.run(
+      `INSERT INTO files (${FILE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      Number(file.id),
+      n(file.ownerId),
+      file.kind,
+      file.contentType,
+      file.size,
+      file.sha256,
+      file.createdAt,
+      file.filename ?? null,
+      n(file.channelId),
+      n(file.messageId),
+      file.width ?? null,
+      file.height ?? null,
+    );
+  }
+
+  getFile(fileId: Id): StoredFile | undefined {
+    const r = this.one<FileRow>(`SELECT ${FILE_COLUMNS} FROM files WHERE id = ?`, Number(fileId));
+    return r ? toFile(r) : undefined;
+  }
+
+  /** Anexos ainda não enviados, deste dono e deste canal, entre os pedidos (para conferir antes de enviar). */
+  pendingAttachments(fileIds: readonly Id[], ownerId: Id, channelId: Id): StoredFile[] {
+    if (fileIds.length === 0) return [];
+    const marks = fileIds.map(() => "?").join(",");
+    return this.all<FileRow>(
+      `SELECT ${FILE_COLUMNS} FROM files WHERE id IN (${marks}) AND kind = 'attachment' AND message_id IS NULL AND owner_id = ? AND channel_id = ?`,
+      ...fileIds.map(Number),
+      Number(ownerId),
+      Number(channelId),
+    ).map(toFile);
+  }
+
+  /** Anexos de uma mensagem (para apagar os arquivos junto). */
+  attachmentIdsOf(messageId: Id): Id[] {
+    return this.all<{ id: number }>("SELECT id FROM files WHERE message_id = ? AND kind = 'attachment'", Number(messageId)).map((r) => String(r.id));
+  }
+
+  /** Anexos sem mensagem há mais de `olderThan` (enviados e abandonados, ou de mensagem/canal apagado). */
+  orphanAttachments(olderThan: number): Id[] {
+    return this.all<{ id: number }>("SELECT id FROM files WHERE kind = 'attachment' AND message_id IS NULL AND created_at < ?", olderThan).map((r) => String(r.id));
+  }
+
+  deleteFile(fileId: Id): void {
+    this.run("DELETE FROM files WHERE id = ?", Number(fileId));
+  }
+
+  /** Troca a foto (ou tira, com `null`). Devolve o id da foto anterior, para apagar o arquivo. */
+  setAvatar(userId: Id, fileId: Id | null): Id | null {
+    const previous = this.one<{ avatar_id: number | null }>("SELECT avatar_id FROM users WHERE id = ?", Number(userId))?.avatar_id ?? null;
+    this.run("UPDATE users SET avatar_id = ? WHERE id = ?", fileId === null ? null : Number(fileId), Number(userId));
+    return avatarOf(previous);
   }
 
   passwordHashOf(userId: Id): string | undefined {
@@ -317,7 +501,7 @@ export class Store {
     const id = String(row.id);
     const now = Date.now();
     const members = this.all<MemberRow & { timeout_until: number | null }>(
-      `SELECT u.id, u.username, u.display_name, m.joined_at, mo.timeout_until FROM members m JOIN users u ON u.id = m.user_id
+      `SELECT ${USER_COLUMNS}, m.joined_at, mo.timeout_until FROM members m JOIN users u ON u.id = m.user_id
        LEFT JOIN moderation mo ON mo.guild_id = m.guild_id AND mo.user_id = m.user_id
        WHERE m.guild_id = ? ORDER BY m.joined_at`,
       row.id,
@@ -407,7 +591,8 @@ export class Store {
   }
 
   /** Permissões efetivas num canal (0 para quem não é membro ou não vê o canal). */
-  channelPermissionsOf(channel: Channel, userId: Id): number {
+  channelPermissionsOf(channel: ServerChannel, userId: Id): number {
+    if (channel.dm) return this.dmPermissionsOf(channel.dm, userId);
     const ctx = this.permissionContext(channel.guildId);
     if (!ctx || !this.isMember(channel.guildId, userId)) return 0;
     return computeChannelPermissions(ctx, userId, this.memberRoleIds(channel.guildId, userId), channel.overwrites, this.timeoutOf(channel.guildId, userId));
@@ -423,7 +608,8 @@ export class Store {
   }
 
   /** Quem vê o canal (o castigo não esconde canais, então não entra aqui). */
-  channelViewerIds(channel: Channel): Id[] {
+  channelViewerIds(channel: ServerChannel): Id[] {
+    if (channel.dm) return [...channel.dm.recipientIds];
     const ctx = this.permissionContext(channel.guildId);
     if (!ctx) return [];
     return [...this.memberRoleMap(channel.guildId)]
@@ -544,12 +730,12 @@ export class Store {
   }
 
   getMember(guildId: Id, userId: Id): { user: User; roles: Id[] } | undefined {
-    const row = this.one<UserRow>("SELECT u.id, u.username, u.display_name FROM members m JOIN users u ON u.id = m.user_id WHERE m.guild_id = ? AND m.user_id = ?", Number(guildId), Number(userId));
+    const row = this.one<UserRow>(`SELECT ${USER_COLUMNS} FROM members m JOIN users u ON u.id = m.user_id WHERE m.guild_id = ? AND m.user_id = ?`, Number(guildId), Number(userId));
     return row ? { user: toUser(row), roles: this.memberRoleIds(guildId, userId) } : undefined;
   }
 
   getUser(userId: Id): User | undefined {
-    const row = this.one<UserRow>("SELECT id, username, display_name FROM users WHERE id = ?", Number(userId));
+    const row = this.one<UserRow>(`SELECT ${USER_COLUMNS} FROM users u WHERE u.id = ?`, Number(userId));
     return row ? toUser(row) : undefined;
   }
 
@@ -595,12 +781,12 @@ export class Store {
   }
 
   bansOf(guildId: Id): Ban[] {
-    return this.all<{ id: number; username: string; display_name: string; reason: string | null; created_at: number; by_id: number | null; by_username: string | null; by_display_name: string | null }>(
-      `SELECT u.id, u.username, u.display_name, b.reason, b.created_at, bu.id AS by_id, bu.username AS by_username, bu.display_name AS by_display_name
+    return this.all<UserRow & { reason: string | null; created_at: number; by_id: number | null; by_username: string | null; by_display_name: string | null; by_avatar_id: number | null }>(
+      `SELECT ${USER_COLUMNS}, b.reason, b.created_at, bu.id AS by_id, bu.username AS by_username, bu.display_name AS by_display_name, bu.avatar_id AS by_avatar_id
        FROM bans b JOIN users u ON u.id = b.user_id LEFT JOIN users bu ON bu.id = b.banned_by
        WHERE b.guild_id = ? ORDER BY b.created_at DESC`,
       Number(guildId),
-    ).map((r) => ({ user: toUser(r), reason: r.reason, bannedBy: userOrNull(r.by_id, r.by_username, r.by_display_name), createdAt: r.created_at }));
+    ).map((r) => ({ user: toUser(r), reason: r.reason, bannedBy: userOrNull(r.by_id, r.by_username, r.by_display_name, r.by_avatar_id), createdAt: r.created_at }));
   }
 
   /* ---------- registro de auditoria ---------- */
@@ -619,8 +805,8 @@ export class Store {
   }
 
   auditLog(guildId: Id, before: Id | null, limit: number): AuditLogEntry[] {
-    return this.all<{ id: number; actor_id: number | null; username: string | null; display_name: string | null; action: AuditAction; target_name: string; detail: string | null; created_at: number }>(
-      `SELECT a.id, a.actor_id, u.username, u.display_name, a.action, a.target_name, a.detail, a.created_at
+    return this.all<{ id: number; actor_id: number | null; username: string | null; display_name: string | null; avatar_id: number | null; action: AuditAction; target_name: string; detail: string | null; created_at: number }>(
+      `SELECT a.id, a.actor_id, u.username, u.display_name, u.avatar_id, a.action, a.target_name, a.detail, a.created_at
        FROM audit_log a LEFT JOIN users u ON u.id = a.actor_id
        WHERE a.guild_id = ? AND (? IS NULL OR a.id < ?) ORDER BY a.id DESC LIMIT ?`,
       Number(guildId),
@@ -630,7 +816,7 @@ export class Store {
     ).map((r) => ({
       id: String(r.id),
       guildId,
-      actor: userOrNull(r.actor_id, r.username, r.display_name),
+      actor: userOrNull(r.actor_id, r.username, r.display_name, r.avatar_id),
       action: r.action,
       targetName: r.target_name,
       detail: r.detail,
@@ -652,13 +838,194 @@ export class Store {
     return this.all<{ user_id: number }>("SELECT user_id FROM members WHERE guild_id = ?", Number(guildId)).map((r) => String(r.user_id));
   }
 
-  /** Todos os usuários que compartilham pelo menos um servidor com `userId` (para presença). */
+  /**
+   * Quem recebe minha presença e meu perfil ao vivo: quem divide servidor comigo, amigos e pedidos, e
+   * quem está nas minhas conversas diretas. (Quem eu bloqueei e quem me bloqueou ficam de fora da parte
+   * de amizade, mas continuam vendo o que um servidor em comum mostra.)
+   */
   peersOf(userId: Id): Id[] {
+    const uid = Number(userId);
     return this.all<{ user_id: number }>(
-      "SELECT DISTINCT m2.user_id FROM members m1 JOIN members m2 ON m2.guild_id = m1.guild_id WHERE m1.user_id = ? AND m2.user_id <> ?",
-      Number(userId),
-      Number(userId),
+      `SELECT m2.user_id FROM members m1 JOIN members m2 ON m2.guild_id = m1.guild_id WHERE m1.user_id = ? AND m2.user_id <> ?
+       UNION SELECT target_id FROM relationships WHERE user_id = ? AND type <> 'blocked'
+       UNION SELECT r2.user_id FROM channel_recipients r1 JOIN channel_recipients r2 ON r2.channel_id = r1.channel_id WHERE r1.user_id = ? AND r2.user_id <> ?`,
+      uid,
+      uid,
+      uid,
+      uid,
+      uid,
     ).map((r) => String(r.user_id));
+  }
+
+  /* ---------- amigos, pedidos e bloqueios ---------- */
+
+  relationshipOf(userId: Id, targetId: Id): RelationshipType | null {
+    return (this.one<{ type: RelationshipType }>("SELECT type FROM relationships WHERE user_id = ? AND target_id = ?", Number(userId), Number(targetId))?.type ?? null);
+  }
+
+  relationshipsOf(userId: Id, live: Pick<LiveState, "isOnline">): Relationship[] {
+    return this.all<UserRow & { type: RelationshipType; since: number }>(
+      `SELECT ${USER_COLUMNS}, r.type, r.since FROM relationships r JOIN users u ON u.id = r.target_id WHERE r.user_id = ? ORDER BY u.display_name`,
+      Number(userId),
+    ).map((r) => ({ user: toUser(r), type: r.type, since: r.since, online: r.type !== "blocked" && live.isOnline(String(r.id)) }));
+  }
+
+  /** Grava (ou apaga, com `null`) a minha relação com `targetId`. */
+  setRelationship(userId: Id, targetId: Id, type: RelationshipType | null, since = Date.now()): void {
+    if (type === null) this.run("DELETE FROM relationships WHERE user_id = ? AND target_id = ?", Number(userId), Number(targetId));
+    else
+      this.run(
+        "INSERT INTO relationships (user_id, target_id, type, since) VALUES (?, ?, ?, ?) ON CONFLICT (user_id, target_id) DO UPDATE SET type = excluded.type, since = excluded.since",
+        Number(userId),
+        Number(targetId),
+        type,
+        since,
+      );
+  }
+
+  /** Um dos dois bloqueou o outro? */
+  isBlockedEither(a: Id, b: Id): boolean {
+    return this.relationshipOf(a, b) === "blocked" || this.relationshipOf(b, a) === "blocked";
+  }
+
+  sharesGuild(a: Id, b: Id): boolean {
+    return this.one("SELECT 1 FROM members m1 JOIN members m2 ON m2.guild_id = m1.guild_id WHERE m1.user_id = ? AND m2.user_id = ?", Number(a), Number(b)) !== undefined;
+  }
+
+  findUserByUsername(username: string): User | undefined {
+    const row = this.one<UserRow>(`SELECT ${USER_COLUMNS} FROM users u WHERE u.username = ?`, username);
+    return row ? toUser(row) : undefined;
+  }
+
+  dmPolicyOf(userId: Id): DmPolicy {
+    return this.one<{ dm_policy: string }>("SELECT dm_policy FROM users WHERE id = ?", Number(userId))?.dm_policy === "friends" ? "friends" : "servers";
+  }
+
+  setDmPolicy(userId: Id, policy: DmPolicy): void {
+    this.run("UPDATE users SET dm_policy = ? WHERE id = ?", policy, Number(userId));
+  }
+
+  /* ---------- conversas diretas ---------- */
+
+  private dmPermissionsOf(dm: NonNullable<ServerChannel["dm"]>, userId: Id): number {
+    if (!dm.recipientIds.includes(userId)) return 0;
+    const all = PERMISSIONS.VIEW_CHANNEL | PERMISSIONS.SEND_MESSAGES | PERMISSIONS.ADD_REACTIONS;
+    if (dm.type === "dm") {
+      const other = dm.recipientIds.find((id) => id !== userId);
+      if (other && this.isBlockedEither(userId, other)) return PERMISSIONS.VIEW_CHANNEL; // lê o histórico, não escreve
+    }
+    return all;
+  }
+
+  /** Canal de servidor ou conversa direta (para as rotas de mensagem, que servem aos dois). */
+  getConversation(channelId: Id): ServerChannel | undefined {
+    const channel = this.getChannel(channelId);
+    if (channel) return channel;
+    const row = this.one<{ id: number; type: string; name: string; owner_id: number | null }>(
+      "SELECT id, type, name, owner_id FROM channels WHERE id = ? AND guild_id IS NULL",
+      Number(channelId),
+    );
+    if (!row) return undefined;
+    const type = row.type === "group_dm" ? "group_dm" : "dm";
+    return {
+      id: String(row.id),
+      guildId: "",
+      type: "text",
+      name: row.name,
+      position: 0,
+      overwrites: [],
+      dm: { type, recipientIds: this.recipientIdsOf(String(row.id)), ownerId: idOrNull(row.owner_id) },
+    };
+  }
+
+  recipientIdsOf(channelId: Id): Id[] {
+    return this.all<{ user_id: number }>("SELECT user_id FROM channel_recipients WHERE channel_id = ? ORDER BY joined_at, user_id", Number(channelId)).map((r) => String(r.user_id));
+  }
+
+  /** A conversa como `viewerId` a vê (sem ele na lista de pessoas). */
+  dmChannelFor(channelId: Id, viewerId: Id): DmChannel | undefined {
+    const row = this.one<{ id: number; type: string; name: string; owner_id: number | null }>(
+      "SELECT id, type, name, owner_id FROM channels WHERE id = ? AND guild_id IS NULL",
+      Number(channelId),
+    );
+    if (!row) return undefined;
+    const recipients = this.all<UserRow>(
+      `SELECT ${USER_COLUMNS} FROM channel_recipients r JOIN users u ON u.id = r.user_id WHERE r.channel_id = ? AND r.user_id <> ? ORDER BY r.joined_at, u.id`,
+      row.id,
+      Number(viewerId),
+    ).map(toUser);
+    const last = this.one<{ id: number | null }>("SELECT MAX(id) AS id FROM messages WHERE channel_id = ?", row.id)?.id ?? null;
+    return {
+      id: String(row.id),
+      type: row.type === "group_dm" ? "group_dm" : "dm",
+      name: row.type === "group_dm" && row.name ? row.name : null,
+      ownerId: idOrNull(row.owner_id),
+      recipients,
+      lastMessageId: idOrNull(last),
+    };
+  }
+
+  /** Conversas que a pessoa deixou abertas (a dois que ela fechou só voltam com mensagem nova). */
+  privateChannelsOf(userId: Id): DmChannel[] {
+    return this.all<{ channel_id: number }>("SELECT channel_id FROM channel_recipients WHERE user_id = ? AND open = 1", Number(userId))
+      .map((r) => this.dmChannelFor(String(r.channel_id), userId))
+      .filter((c): c is DmChannel => c !== undefined)
+      .sort((a, b) => Number(b.lastMessageId ?? b.id) - Number(a.lastMessageId ?? a.id));
+  }
+
+  findDm(a: Id, b: Id): Id | null {
+    return idOrNull(this.one<{ id: number }>("SELECT id FROM channels WHERE dm_key = ?", dmKeyOf(a, b))?.id ?? null);
+  }
+
+  /** Conversa a dois: aberta para quem criou; para o outro, aparece quando chegar a primeira mensagem. */
+  createDm(from: Id, to: Id): Id {
+    const id = nextId();
+    const now = Date.now();
+    this.transaction(() => {
+      this.run("INSERT INTO channels (id, guild_id, name, position, type, dm_key) VALUES (?, NULL, '', 0, 'dm', ?)", Number(id), dmKeyOf(from, to));
+      this.run("INSERT INTO channel_recipients (channel_id, user_id, joined_at, open) VALUES (?, ?, ?, 1), (?, ?, ?, 0)", Number(id), Number(from), now, Number(id), Number(to), now);
+    });
+    return id;
+  }
+
+  createGroupDm(ownerId: Id, memberIds: readonly Id[], name: string | null): Id {
+    const id = nextId();
+    const now = Date.now();
+    this.transaction(() => {
+      this.run("INSERT INTO channels (id, guild_id, name, position, type, owner_id) VALUES (?, NULL, ?, 0, 'group_dm', ?)", Number(id), name ?? "", Number(ownerId));
+      for (const userId of [ownerId, ...memberIds]) this.run("INSERT OR IGNORE INTO channel_recipients (channel_id, user_id, joined_at, open) VALUES (?, ?, ?, 1)", Number(id), Number(userId), now);
+    });
+    return id;
+  }
+
+  setDmOpen(channelId: Id, userId: Id, open: boolean): void {
+    this.run("UPDATE channel_recipients SET open = ? WHERE channel_id = ? AND user_id = ?", open ? 1 : 0, Number(channelId), Number(userId));
+  }
+
+  hiddenRecipientsOf(channelId: Id): Id[] {
+    return this.all<{ user_id: number }>("SELECT user_id FROM channel_recipients WHERE channel_id = ? AND open = 0", Number(channelId)).map((r) => String(r.user_id));
+  }
+
+  addRecipient(channelId: Id, userId: Id): void {
+    this.run("INSERT OR IGNORE INTO channel_recipients (channel_id, user_id, joined_at, open) VALUES (?, ?, ?, 1)", Number(channelId), Number(userId), Date.now());
+  }
+
+  /** Tira do grupo. Se era o dono, o dono passa a ser quem entrou primeiro; sem ninguém, o grupo some. */
+  removeRecipient(channelId: Id, userId: Id): { deleted: boolean } {
+    return this.transaction(() => {
+      this.run("DELETE FROM channel_recipients WHERE channel_id = ? AND user_id = ?", Number(channelId), Number(userId));
+      const left = this.recipientIdsOf(channelId);
+      if (left.length === 0) {
+        this.run("DELETE FROM channels WHERE id = ? AND guild_id IS NULL", Number(channelId));
+        return { deleted: true };
+      }
+      this.run("UPDATE channels SET owner_id = ? WHERE id = ? AND (owner_id IS NULL OR owner_id = ?)", Number(left[0]), Number(channelId), Number(userId));
+      return { deleted: false };
+    });
+  }
+
+  renameGroupDm(channelId: Id, name: string | null): void {
+    this.run("UPDATE channels SET name = ? WHERE id = ? AND type = 'group_dm'", name ?? "", Number(channelId));
   }
 
   addMember(guildId: Id, user: User, live: LiveState): Member {
@@ -668,7 +1035,7 @@ export class Store {
   }
 
   getChannel(channelId: Id): Channel | undefined {
-    const row = this.one<ChannelRow>(`SELECT ${CHANNEL_COLUMNS} FROM channels WHERE id = ?`, Number(channelId));
+    const row = this.one<ChannelRow>(`SELECT ${CHANNEL_COLUMNS} FROM channels WHERE id = ? AND guild_id IS NOT NULL`, Number(channelId));
     if (!row) return undefined;
     const overwrites = this.all<OverwriteRow>("SELECT channel_id, target_type, target_id, allow, deny FROM channel_overwrites WHERE channel_id = ?", row.id).map(toOverwrite);
     return toChannel(row, overwrites);
@@ -720,11 +1087,11 @@ export class Store {
   }
 
   invitesOf(guildId: Id): InviteDetails[] {
-    return this.all<{ code: string; uses: number; created_at: number; id: number | null; username: string | null; display_name: string | null }>(
-      `SELECT i.code, i.uses, i.created_at, u.id, u.username, u.display_name
+    return this.all<{ code: string; uses: number; created_at: number; id: number | null; username: string | null; display_name: string | null; avatar_id: number | null }>(
+      `SELECT i.code, i.uses, i.created_at, u.id, u.username, u.display_name, u.avatar_id
        FROM invites i LEFT JOIN users u ON u.id = i.created_by WHERE i.guild_id = ? ORDER BY i.created_at DESC`,
       Number(guildId),
-    ).map((r) => ({ code: r.code, guildId, uses: r.uses, createdAt: r.created_at, createdBy: userOrNull(r.id, r.username, r.display_name) }));
+    ).map((r) => ({ code: r.code, guildId, uses: r.uses, createdAt: r.created_at, createdBy: userOrNull(r.id, r.username, r.display_name, r.avatar_id) }));
   }
 
   deleteInvite(code: string): boolean {
@@ -754,16 +1121,27 @@ export class Store {
     for (const r of this.all<{ message_id: number; user_id: number }>(`SELECT message_id, user_id FROM message_mentions WHERE message_id IN (${marks})`, ...ids)) {
       mentions.set(r.message_id, [...(mentions.get(r.message_id) ?? []), String(r.user_id)]);
     }
+    // anexos com link assinado (só quem recebe a mensagem recebe o link)
+    const attachments = new Map<number, Attachment[]>();
+    const now = Date.now();
+    for (const r of this.all<FileRow>(`SELECT ${FILE_COLUMNS} FROM files WHERE kind = 'attachment' AND message_id IN (${marks}) ORDER BY position, id`, ...ids)) {
+      const filename = r.filename ?? "arquivo";
+      attachments.set(r.message_id!, [
+        ...(attachments.get(r.message_id!) ?? []),
+        { id: String(r.id), filename, size: r.size, contentType: r.content_type, width: r.width, height: r.height, url: signAttachment(this.attachmentSecret, String(r.id), filename, now) },
+      ]);
+    }
     return rows.map((r) => ({
       id: String(r.id),
       channelId: String(r.channel_id),
-      author: { id: String(r.author_id), username: r.username, displayName: r.display_name },
+      author: { id: String(r.author_id), username: r.username, displayName: r.display_name, avatar: avatarOf(r.avatar_id) },
       content: r.content,
       createdAt: r.created_at,
       editedAt: r.edited_at,
       replyTo: toReference(r),
       reactions: reactions.get(r.id) ?? [],
       mentions: mentions.get(r.id) ?? [],
+      attachments: attachments.get(r.id) ?? [],
     }));
   }
 
@@ -772,8 +1150,11 @@ export class Store {
     for (const userId of mentionIds) this.run("INSERT OR IGNORE INTO message_mentions (message_id, user_id) VALUES (?, ?)", Number(messageId), Number(userId));
   }
 
-  /** `mentionIds` já validados (membros do servidor), incluindo o autor da mensagem respondida. */
-  createMessage(channelId: Id, author: User, content: string, replyToId: Id | null = null, mentionIds: Id[] = []): Message {
+  /**
+   * `mentionIds` já validados (membros do servidor), incluindo o autor da mensagem respondida.
+   * `attachmentIds`: anexos pendentes já conferidos (`pendingAttachments`).
+   */
+  createMessage(channelId: Id, author: User, content: string, replyToId: Id | null = null, mentionIds: Id[] = [], attachmentIds: Id[] = []): Message {
     const id = nextId();
     this.transaction(() => {
       this.run(
@@ -781,6 +1162,10 @@ export class Store {
         Number(id), Number(channelId), Number(author.id), content, Date.now(), replyToId === null ? null : Number(replyToId),
       );
       this.setMentions(id, mentionIds);
+      // a ordem é a da fila de quem enviou (não a de quem terminou de subir primeiro)
+      attachmentIds.forEach((fileId, position) =>
+        this.run("UPDATE files SET message_id = ?, position = ? WHERE id = ? AND message_id IS NULL", Number(id), position, Number(fileId)),
+      );
     });
     return this.getMessage(id)!;
   }
@@ -850,19 +1235,29 @@ export class Store {
    */
   readStatesOf(userId: Id): ReadState[] {
     const uid = Number(userId);
+    // Conversa direta: toda mensagem de outra pessoa conta como menção (selo e notificação).
     const rows = this.all<{ channel_id: number; last_read_id: number; last_message_id: number | null; mention_count: number }>(
       `WITH base AS (
-         SELECT c.id AS channel_id, COALESCE(rs.last_read_id, MAX(mb.joined_at - ?, 0) * ?) AS last_read_id
+         SELECT c.id AS channel_id, COALESCE(rs.last_read_id, MAX(mb.joined_at - ?, 0) * ?) AS last_read_id, 0 AS is_dm
            FROM channels c
            JOIN members mb ON mb.guild_id = c.guild_id AND mb.user_id = ?
            LEFT JOIN read_states rs ON rs.channel_id = c.id AND rs.user_id = ?
-          WHERE c.type = 'text')
+          WHERE c.type = 'text'
+         UNION ALL
+         SELECT c.id, COALESCE(rs.last_read_id, MAX(cr.joined_at - ?, 0) * ?), 1
+           FROM channels c
+           JOIN channel_recipients cr ON cr.channel_id = c.id AND cr.user_id = ? AND cr.open = 1
+           LEFT JOIN read_states rs ON rs.channel_id = c.id AND rs.user_id = ?
+          WHERE c.guild_id IS NULL)
        SELECT b.channel_id, b.last_read_id,
          (SELECT MAX(m.id) FROM messages m WHERE m.channel_id = b.channel_id) AS last_message_id,
-         (SELECT COUNT(*) FROM message_mentions mm JOIN messages m ON m.id = mm.message_id
-            WHERE mm.user_id = ? AND m.channel_id = b.channel_id AND m.author_id <> ? AND m.id > b.last_read_id) AS mention_count
+         CASE WHEN b.is_dm = 1
+           THEN (SELECT COUNT(*) FROM messages m WHERE m.channel_id = b.channel_id AND m.author_id <> ? AND m.id > b.last_read_id)
+           ELSE (SELECT COUNT(*) FROM message_mentions mm JOIN messages m ON m.id = mm.message_id
+                  WHERE mm.user_id = ? AND m.channel_id = b.channel_id AND m.author_id <> ? AND m.id > b.last_read_id)
+         END AS mention_count
        FROM base b`,
-      ID_EPOCH, ID_SEQUENCE_SIZE, uid, uid, uid, uid,
+      ID_EPOCH, ID_SEQUENCE_SIZE, uid, uid, ID_EPOCH, ID_SEQUENCE_SIZE, uid, uid, uid, uid, uid,
     );
     return rows.map((r) => ({
       channelId: String(r.channel_id),
