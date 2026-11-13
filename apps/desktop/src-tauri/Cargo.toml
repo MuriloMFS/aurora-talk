@@ -1,6 +1,6 @@
 [package]
 name = "aurora"
-version = "1.4.0"
+version = "1.4.1"
 description = "Aurora — app desktop (Tauri 2). Rust aqui é só a cola nativa (ADR-001)."
 authors = ["Aurora contributors"]
 license = ""

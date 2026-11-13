@@ -29,7 +29,7 @@ import { registerSiteRoutes } from "./site.ts";
 import type { IceServerSource } from "./turn.ts";
 import { registerUpdateRoutes } from "./updates.ts";
 
-export const SERVER_VERSION = "1.4.0";
+export const SERVER_VERSION = "1.4.1";
 
 export class HttpError extends Error {
   readonly status: number;

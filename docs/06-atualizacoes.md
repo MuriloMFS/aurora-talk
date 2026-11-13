@@ -17,7 +17,19 @@ Peças: `apps/desktop/src-tauri/src/lib.rs` (comandos `check_update`/`install_up
    ```bash
    pnpm release -- -Notes "O que mudou nesta versão"
    ```
-3. Pronto: o script gera o app **assinado**, copia o instalador para `apps/server/releases/<versão>/` e atualiza `apps/server/releases/latest.json`. Todos os apps ≥ 1.0.1 conectados a esse servidor se atualizam ao abrir.
+3. Pronto: o script gera o app **assinado**, **confere o instalador com o Microsoft Defender**, copia o instalador para `apps/server/releases/<versão>/` e atualiza `apps/server/releases/latest.json`. Todos os apps ≥ 1.0.1 conectados a esse servidor se atualizam ao abrir.
+4. Para subir ao servidor oficial: `pnpm deploy:server` ([07](07-publicacao.md)).
+
+### Se o Defender acusar o instalador
+O `pnpm release` para e não publica nada. Foi o que aconteceu com o 1.4.0: o modelo de aprendizado de máquina do Defender acusou `Trojan:Win32/Bearfoos.A!ml`. O sufixo `!ml` indica detecção por modelo, não por vírus conhecido. Esse 1.4.0 chegou a ser publicado antes de o script ter essa conferência, e quem atualizou teve o app apagado.
+- Não é um recurso específico. Em 2026-11-13, o mesmo código recompilado saiu limpo, com e sem o "abrir com o Windows". O modelo implica com o arquivo exato de um app novo e sem certificado.
+- Resolução: aumente a versão e gere de novo. Foi assim que saiu a 1.4.1, limpa.
+- Se continuar acusando, envie o arquivo para análise em <https://www.microsoft.com/wdsi/filesubmission>, como "Software developer" e "Incorrectly detected".
+- Para conferir um arquivo à mão, sem deixar o Defender apagá-lo:
+  ```powershell
+  & "C:\ProgramData\Microsoft\Windows Defender\Platform\CurrentVersion\MpCmdRun.exe" -Scan -ScanType 3 -File <arquivo> -DisableRemediation
+  ```
+- A solução de longo prazo é o certificado de assinatura de código: com ele, a reputação passa de uma versão para a outra.
 
 O instalador para quem ainda não tem o app fica em `apps/desktop/src-tauri/target/release/bundle/nsis/Aurora_<versão>_x64-setup.exe`.
 

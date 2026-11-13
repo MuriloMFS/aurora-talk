@@ -98,6 +98,8 @@
   - Bandeja do Windows, fechar para a bandeja, abrir com o Windows e iniciar minimizado.
   - Servidor: mudar o nome de exibição (ao vivo, `USER_UPDATE`) e trocar a senha.
 
+- **1.4.1** — mesma 1.4.0, recompilada: o instalador 1.4.0 foi acusado pelo Defender (falso positivo `Bearfoos.A!ml`). O `pnpm release` agora só publica instalador aprovado pelo Defender ([06](06-atualizacoes.md)).
+
 ## O que fica para depois (ordem sugerida)
 escolha de microfone/fone · DMs e amigos · anexos e prévia de links · cargos e permissões (pacote `permissions` do doc 03) · lista virtualizada para canais grandes · servidor hospedado (VPS) com HTTPS · depois, o restante do roadmap.
 

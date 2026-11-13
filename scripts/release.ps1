@@ -44,6 +44,28 @@ $Setup = "Aurora_${Version}_x64-setup.exe"
 $SigPath = Join-Path $Bundle "$Setup.sig"
 if (-not (Test-Path $SigPath)) { throw "Assinatura nao foi gerada: $SigPath" }
 
+# Microsoft Defender: o modelo de aprendizado de maquina dele as vezes acusa um instalador novo e sem
+# certificado (ex.: "Trojan:Win32/Bearfoos.A!ml" no 1.4.0). Publicado assim, a atualizacao automatica
+# faz o Defender apagar o app de quem atualizar. Por isso so publica o que o Defender aprova.
+# -DisableRemediation: so verifica, nao mexe no arquivo.
+$MpCmdRun = @(
+  (Join-Path $env:ProgramData 'Microsoft\Windows Defender\Platform\CurrentVersion\MpCmdRun.exe'),
+  (Join-Path $env:ProgramFiles 'Windows Defender\MpCmdRun.exe')
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($MpCmdRun) {
+  Write-Host 'Conferindo o instalador com o Microsoft Defender...'
+  $Scan = & $MpCmdRun -Scan -ScanType 3 -File (Join-Path $Bundle $Setup) -DisableRemediation 2>&1 | ForEach-Object { "$_" }
+  $Threat = $Scan | Select-String -Pattern '^\s*Threat\s*:' | Select-Object -First 1
+  if ($Threat) {
+    throw ("O Defender acusou o instalador ($($Threat.Line.Trim())). Nada foi publicado. " +
+      'Quase sempre e falso positivo de app novo sem certificado: aumente a versao (tauri.conf.json, Cargo.toml, package.json), ' +
+      'gere de novo e, se continuar, envie o arquivo para analise em https://www.microsoft.com/wdsi/filesubmission')
+  }
+  Write-Host 'Defender: nenhuma ameaca encontrada.'
+} else {
+  Write-Host 'AVISO: Microsoft Defender nao encontrado; o instalador nao foi conferido.'
+}
+
 $Releases = Join-Path $Root 'apps\server\releases'
 $Dest = Join-Path $Releases $Version
 New-Item -ItemType Directory -Force -Path $Dest | Out-Null
