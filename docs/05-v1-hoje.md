@@ -149,6 +149,7 @@
   - O nome do servidor virou menu (convidar, configurações, criar canal, sair). Nos canais, ao passar o mouse: convidar e editar o canal; nas salas de voz, abrir o chat da sala (as salas de voz agora têm chat).
   - Busca de pessoas na barra do topo.
   - Lista de membros agrupada por cargo ou por status (Online, Ausente, Não perturbe, Offline).
+- **1.13.1** — **texto no tamanho certo**: a escala de texto foi recalibrada para a Inter (base 14 px em vez de 16, títulos menores, linhas mais justas), que desenhava tudo ~12% maior que o comum no gênero ([medição](spikes/tipografia.md)). O tamanho do chat que estava no padrão antigo passa para 14 px; quem escolheu outro mantém.
 
 ## O que fica para depois (ordem sugerida)
 escolha de microfone/fone · DMs e amigos · anexos e prévia de links · cargos e permissões (pacote `permissions` do doc 03) · lista virtualizada para canais grandes · servidor hospedado (VPS) com HTTPS · depois, o restante do roadmap.

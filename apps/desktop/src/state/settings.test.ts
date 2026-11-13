@@ -25,8 +25,15 @@ describe("preferências deste aparelho", () => {
     expect(s.sounds.enabled.mute).toBe(false);
     expect(s.sounds.enabled.unmute).toBe(true);
     expect(Object.keys(s.sounds.enabled)).toEqual([...SOUND_IDS]); // chave estranha não entra
-    expect(s.appearance).toEqual({ density: "compact", chatFontSize: 16 }); // 17 → tamanho válido mais perto
+    expect(s.appearance).toEqual({ density: "compact", chatFontSize: 16, typeScale: 2 }); // 17 → tamanho válido mais perto
     expect(s.accessibility).toEqual({ motion: "reduce", strongBorders: false });
+  });
+
+  it("escala nova: o padrão antigo (16) vira 14; quem escolheu outro tamanho mantém", () => {
+    expect(sanitizeSettings({ appearance: { chatFontSize: 16 } }).appearance.chatFontSize).toBe(14);
+    expect(sanitizeSettings({ appearance: { chatFontSize: 18 } }).appearance.chatFontSize).toBe(18);
+    expect(sanitizeSettings({ appearance: { chatFontSize: 16, typeScale: 2 } }).appearance.chatFontSize).toBe(16); // escolhido já na escala nova
+    expect(sanitizeSettings({ appearance: { chatFontSize: 13 } }).appearance.chatFontSize).toBe(13);
   });
 
   it("perfil de entrada decide o processamento de voz", () => {

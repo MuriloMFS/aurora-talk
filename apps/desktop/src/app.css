@@ -665,8 +665,8 @@ ul {
   text-overflow: ellipsis;
 }
 .member__name {
-  font-size: var(--text-sm);
-  line-height: var(--leading-sm);
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
   font-weight: var(--weight-medium);
 }
 .member--offline .member__name {

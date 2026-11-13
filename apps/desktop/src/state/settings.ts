@@ -43,6 +43,8 @@ export interface AppSettings {
     density: Density;
     /** Tamanho do texto das mensagens, 12–24 px. */
     chatFontSize: number;
+    /** Escala em que chatFontSize foi escolhido (ver TYPE_SCALE). */
+    typeScale: number;
   };
   accessibility: {
     motion: MotionPreference;
@@ -57,7 +59,12 @@ export interface AppSettings {
 
 export const IDLE_MINUTES = [0, 5, 10, 15, 30] as const;
 
-export const CHAT_FONT_SIZES = [12, 14, 15, 16, 18, 20, 24] as const;
+export const CHAT_FONT_SIZES = [12, 13, 14, 15, 16, 18, 20, 24] as const;
+
+/** Versão da escala de texto. Na 2 o padrão do chat caiu de 16 para 14 px (Inter calibrada). */
+export const TYPE_SCALE = 2;
+/** Altura de linha do chat para um tamanho de fonte (mesma proporção da escala). */
+export const chatLineHeight = (size: number) => Math.round(size * 1.43);
 
 export const DEFAULT_SETTINGS: AppSettings = {
   voice: {
@@ -72,7 +79,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   },
   sounds: { volume: 50, enabled: Object.fromEntries(SOUND_IDS.map((id) => [id, true])) as Record<SoundId, boolean> },
   notifications: { desktop: true, badge: true, flash: true },
-  appearance: { density: "cozy", chatFontSize: 16 },
+  appearance: { density: "cozy", chatFontSize: 14, typeScale: TYPE_SCALE },
   accessibility: { motion: "system", strongBorders: false },
   presence: { idleMinutes: 10 },
 };
@@ -105,7 +112,9 @@ export function sanitizeSettings(raw: unknown): AppSettings {
   const appearance = obj(root.appearance);
   const accessibility = obj(root.accessibility);
   const presence = obj(root.presence);
-  const fontSize = num(appearance.chatFontSize, 12, 24, d.appearance.chatFontSize);
+  const savedSize = num(appearance.chatFontSize, 12, 24, d.appearance.chatFontSize);
+  // quem nunca mexeu ficou com o padrão antigo (16): passa para o novo padrão
+  const fontSize = appearance.typeScale !== TYPE_SCALE && savedSize === 16 ? d.appearance.chatFontSize : savedSize;
   return {
     voice: {
       inputDeviceId: deviceId(voice.inputDeviceId),
@@ -128,7 +137,8 @@ export function sanitizeSettings(raw: unknown): AppSettings {
     },
     appearance: {
       density: oneOf(appearance.density, ["cozy", "compact"], d.appearance.density),
-      chatFontSize: CHAT_FONT_SIZES.reduce((best, size) => (Math.abs(size - fontSize) < Math.abs(best - fontSize) ? size : best), 16),
+      chatFontSize: CHAT_FONT_SIZES.reduce((best, size) => (Math.abs(size - fontSize) < Math.abs(best - fontSize) ? size : best), d.appearance.chatFontSize as number),
+      typeScale: TYPE_SCALE,
     },
     accessibility: {
       motion: oneOf(accessibility.motion, ["system", "reduce"], d.accessibility.motion),

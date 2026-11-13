@@ -117,8 +117,8 @@ export function AppearanceSection({ theme, onThemeChange }: { theme: ThemePrefer
           value={Math.max(0, index)}
           min={0}
           max={CHAT_FONT_SIZES.length - 1}
-          format={(i) => `${CHAT_FONT_SIZES[i] ?? 16} px`}
-          onChange={(i) => patchSettings("appearance", { chatFontSize: CHAT_FONT_SIZES[i] ?? 16 })}
+          format={(i) => `${CHAT_FONT_SIZES[i] ?? 14} px`}
+          onChange={(i) => patchSettings("appearance", { chatFontSize: CHAT_FONT_SIZES[i] ?? 14 })}
         />
         <p className="settings-preview message__content" aria-hidden="true">
           Assim fica o texto das conversas. Ajuste até ler sem esforço.

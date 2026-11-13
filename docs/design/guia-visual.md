@@ -82,14 +82,16 @@ Resolver "seguir o sistema" **em JS** (`matchMedia('(prefers-color-scheme: dark)
 | Token | Tamanho/linha | Uso |
 |---|---|---|
 | `--text-xs` | 12/16 | metadados, rótulos de badge (mínimo absoluto) |
-| `--text-sm` | 14/20 | UI secundária, chat **compacto**, listas |
-| `--text-base` | **16/24** | **chat aconchegante (padrão)**, formulários |
-| `--text-lg` | 18/26 | subtítulos, nome do canal no cabeçalho |
-| `--text-xl` | 20/28 | títulos de modal |
-| `--text-2xl` | 24/32 | títulos de página/configuração |
-| `--text-3xl` | 32/40 | onboarding, estados vazios |
+| `--text-sm` | 13/18 | UI secundária, busca, painel do usuário |
+| `--text-base` | **14/20** | **chat (padrão)**, canais, membros, formulários |
+| `--text-lg` | 16/22 | subtítulos, nome do canal no cabeçalho |
+| `--text-xl` | 18/24 | títulos de modal |
+| `--text-2xl` | 22/28 | títulos de página/configuração |
+| `--text-3xl` | 28/36 | onboarding, estados vazios |
 | `--text-4xl` · `--text-5xl` · `--text-6xl` | 40/48 · 56/60 · 72/76 | **só no site de download** (títulos de marca); a interface do app para no 3xl |
 Pesos: 400 corpo, 500 UI/nomes, 600 títulos, 700 só ênfase pontual. `font-variant-numeric: tabular-nums` em contadores, tempo e durações. **Escala de fonte do usuário** (12–24 px no chat) deve escalar linhas e avatares proporcionalmente; layout testado a **200% de zoom**. Nunca < 12 px.
+
+**Escala calibrada para a Inter:** no mesmo px a Inter desenha ~12% mais larga e com "x" mais alto que as fontes de UI comuns no gênero, então o app usa 14 px onde elas usariam 16 (medição em `docs/spikes/tipografia.md`). Páginas de leitura (site de download) usam `<html data-scale="leitura">`, que devolve a escala maior (base 16/24).
 
 ### 3.3 Espaço, forma, elevação, camadas
 - **Grade de 4 px:** `--space-0:0; -1:2px; -2:4px; -3:8px; -4:12px; -5:16px; -6:20px; -7:24px; -8:32px; -9:48px; -10:64px`.

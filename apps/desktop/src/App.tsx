@@ -18,7 +18,7 @@ const movedFromLocal = (() => {
   return Boolean(session && IS_HOSTED && session.serverUrl !== DEFAULT_SERVER_URL && isLocalAddress(session.serverUrl));
 })();
 import { AuthScreen } from "./ui/AuthScreen";
-import { useSettings, type AppSettings } from "./state/settings";
+import { chatLineHeight, useSettings, type AppSettings } from "./state/settings";
 import { UpdateButton, UpdateStatus, useAppUpdate } from "./ui/update";
 
 /** Preferências visuais vão para o <html> (valem também na tela de login). */
@@ -26,7 +26,7 @@ function applyDisplaySettings({ appearance, accessibility }: AppSettings): void 
   const root = document.documentElement;
   root.dataset.density = appearance.density;
   root.style.setProperty("--chat-font-size", `${appearance.chatFontSize}px`);
-  root.style.setProperty("--chat-line-height", `${Math.round(appearance.chatFontSize * 1.5)}px`);
+  root.style.setProperty("--chat-line-height", `${chatLineHeight(appearance.chatFontSize)}px`);
   if (accessibility.motion === "reduce") root.dataset.motion = "reduce";
   else delete root.dataset.motion;
   if (accessibility.strongBorders) root.dataset.strongBorders = "";

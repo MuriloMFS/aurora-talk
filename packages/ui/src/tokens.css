@@ -108,13 +108,16 @@
   /* tipografia */
   --font-ui: "Inter Variable", "Inter", system-ui, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  /* Escala do app calibrada para a Inter: ela desenha ~12% maior que fontes de "x" mais baixo
+     no mesmo px, então 14 px aqui tem o tamanho visual de 16 px nos apps do gênero
+     (medição em docs/spikes/tipografia.md). Nunca menos de 12 px. */
   --text-xs: 12px;   --leading-xs: 16px;
-  --text-sm: 14px;   --leading-sm: 20px;
-  --text-base: 16px; --leading-base: 24px;
-  --text-lg: 18px;   --leading-lg: 26px;
-  --text-xl: 20px;   --leading-xl: 28px;
-  --text-2xl: 24px;  --leading-2xl: 32px;
-  --text-3xl: 32px;  --leading-3xl: 40px;
+  --text-sm: 13px;   --leading-sm: 18px;
+  --text-base: 14px; --leading-base: 20px;
+  --text-lg: 16px;   --leading-lg: 22px;
+  --text-xl: 18px;   --leading-xl: 24px;
+  --text-2xl: 22px;  --leading-2xl: 28px;
+  --text-3xl: 28px;  --leading-3xl: 36px;
   /* títulos de página de marca (site de download); a interface do app para no 3xl */
   --text-4xl: 40px;  --leading-4xl: 48px;
   --text-5xl: 56px;  --leading-5xl: 60px;
@@ -214,6 +217,16 @@
 *::before,
 *::after {
   box-sizing: border-box;
+}
+
+:root[data-scale="leitura"] {
+  /* páginas de leitura (site de download): escala maior, para texto corrido */
+  --text-sm: 14px;   --leading-sm: 20px;
+  --text-base: 16px; --leading-base: 24px;
+  --text-lg: 18px;   --leading-lg: 26px;
+  --text-xl: 20px;   --leading-xl: 28px;
+  --text-2xl: 24px;  --leading-2xl: 32px;
+  --text-3xl: 32px;  --leading-3xl: 40px;
 }
 
 html,
