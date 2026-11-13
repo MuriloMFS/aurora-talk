@@ -113,6 +113,10 @@
   --text-xl: 20px;   --leading-xl: 28px;
   --text-2xl: 24px;  --leading-2xl: 32px;
   --text-3xl: 32px;  --leading-3xl: 40px;
+  /* títulos de página de marca (site de download); a interface do app para no 3xl */
+  --text-4xl: 40px;  --leading-4xl: 48px;
+  --text-5xl: 56px;  --leading-5xl: 60px;
+  --text-6xl: 72px;  --leading-6xl: 76px;
   --weight-regular: 400;
   --weight-medium: 500;
   --weight-semibold: 600;
@@ -172,6 +176,7 @@
   --modal-width-sm: 440px;
   --modal-width-md: 600px;
   --settings-content-max: 740px;
+  --site-max-width: 1200px;
   --stream-tile-min: 320px;
 
   /* componentes */

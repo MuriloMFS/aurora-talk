@@ -12,5 +12,6 @@ export default defineConfig({
       "/download": "http://localhost:3000",
     },
   },
-  build: { target: "es2020" },
+  // assetsInlineLimit 0: nada embutido como data: (a CSP do servidor só aceita fontes e imagens do próprio site)
+  build: { target: "es2020", assetsInlineLimit: 0 },
 });

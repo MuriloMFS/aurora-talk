@@ -1,9 +1,10 @@
 import "@fontsource-variable/inter";
+import "@fontsource/jetbrains-mono/latin-400.css"; // só o alfabeto latino (cobre o português)
 import "@aurora/ui/tokens.css";
 import "./site.css";
 import { applyTheme, nextPreference, readPreference, savePreference, watchSystemTheme } from "@aurora/ui/theme";
 
-/* ---------- versão publicada (botão de download) ---------- */
+/* ---------- versão publicada: tamanho e número reais, vindos do servidor ---------- */
 interface LatestRelease {
   version: string;
   size: number;
@@ -11,24 +12,28 @@ interface LatestRelease {
   download: string;
 }
 
-const meta = document.getElementById("release-meta");
-const footerVersion = document.getElementById("footer-version");
-const downloadButton = document.getElementById("download-button");
-
 export const formatSize = (bytes: number): string => `${(bytes / 1024 / 1024).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} MB`;
+
+const fill = (selector: string, text: string) => {
+  for (const element of document.querySelectorAll(selector)) element.textContent = text;
+};
 
 fetch("/api/releases/latest")
   .then((response) => (response.ok ? (response.json() as Promise<LatestRelease>) : null))
   .then((release) => {
     if (!release) {
-      if (meta) meta.textContent = "O download ainda não está disponível. Volte em alguns minutos.";
-      downloadButton?.setAttribute("aria-disabled", "true");
+      fill("[data-release-meta]", "O download ainda não está disponível. Volte em alguns minutos.");
+      for (const link of document.querySelectorAll("[data-download]")) link.setAttribute("aria-disabled", "true");
       return;
     }
-    if (meta) meta.textContent = `Versão ${release.version} · ${formatSize(release.size)} · Windows 10 e 11 (64 bits) · grátis`;
-    if (footerVersion) footerVersion.textContent = `Versão ${release.version}`;
+    const size = formatSize(release.size);
+    fill("[data-release-line]", `Versão ${release.version} para Windows 10 e 11`);
+    fill("[data-release-meta]", `${size} · Grátis · 64 bits`);
+    fill("[data-release-size]", size);
+    fill("[data-release-version]", release.version);
+    fill("[data-release-version-label]", `Versão ${release.version}`);
   })
-  .catch(() => undefined); // sem rede: fica o texto padrão, o link continua funcionando
+  .catch(() => undefined); // sem rede: ficam os textos padrão, e os links de download continuam funcionando
 
 /* ---------- só Windows por enquanto ---------- */
 if (!/Windows/i.test(navigator.userAgent)) document.getElementById("platform-note")?.removeAttribute("hidden");

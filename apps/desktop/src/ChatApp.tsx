@@ -490,7 +490,7 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
         .map((userId) => membersById[userId]?.user.displayName)
         .filter((name): name is string => Boolean(name))
     : [];
-  const statusText = state.status === "ready" ? `Online · ${platform?.kind === "tauri" ? `v${platform.appVersion}` : "web"}` : "Reconectando…";
+  const statusText = state.status === "ready" ? (platform?.kind === "tauri" ? `Online · v${platform.appVersion}` : "Online") : "Reconectando…";
   const channelsOf = (type: ChannelType) =>
     guild ? guild.channelIds.map((id) => state.channels[id]).filter((c): c is Channel => c !== undefined && c.type === type) : [];
 

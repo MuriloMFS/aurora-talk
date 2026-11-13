@@ -88,6 +88,7 @@ Resolver "seguir o sistema" **em JS** (`matchMedia('(prefers-color-scheme: dark)
 | `--text-xl` | 20/28 | títulos de modal |
 | `--text-2xl` | 24/32 | títulos de página/configuração |
 | `--text-3xl` | 32/40 | onboarding, estados vazios |
+| `--text-4xl` · `--text-5xl` · `--text-6xl` | 40/48 · 56/60 · 72/76 | **só no site de download** (títulos de marca); a interface do app para no 3xl |
 Pesos: 400 corpo, 500 UI/nomes, 600 títulos, 700 só ênfase pontual. `font-variant-numeric: tabular-nums` em contadores, tempo e durações. **Escala de fonte do usuário** (12–24 px no chat) deve escalar linhas e avatares proporcionalmente; layout testado a **200% de zoom**. Nunca < 12 px.
 
 ### 3.3 Espaço, forma, elevação, camadas

@@ -17,6 +17,15 @@ MFS-SERVER (Linux Mint 22.3, 192.168.50.107) — usuário mfs, sem sudo
 - Atrás do tunnel, o servidor usa o IP real do cabeçalho `CF-Connecting-IP` (limite de tentativas de login). Isso só vale com o servidor escutando em 127.0.0.1 (`AURORA_TRUST_CLOUDFLARE=1`).
 - A porta 3000 do servidor é da API do MoneyTrack (Docker): o Aurora usa a **3300**.
 
+## Site de download (`apps/site`)
+- Página única, só com telas **reais** do app (`apps/site/screens`, nos temas escuro e claro), sem ilustrações genéricas nem depoimentos. Versão e tamanho do instalador vêm de `GET /api/releases/latest`.
+- As imagens passam pelo Vite: o nome leva um código do conteúdo (`assets/app-dark-<hash>.webp`), então foto nova nunca fica presa no cache da Cloudflare, que guarda arquivos por 4 h. Nada vai embutido como `data:`, porque a CSP do servidor só aceita fontes e imagens do próprio site.
+- Para refazer as fotos depois de mudar a interface:
+  1. Em outros terminais, rode `pnpm dev:web` e `pnpm voice`.
+  2. Rode `pnpm site:screens`. Ele sobe um servidor próprio com banco vazio na porta 3000, monta uma conversa de exemplo e fotografa num Edge sem janela.
+  3. Rode `pnpm deploy:server`.
+- A Cloudflare tenta injetar o script do Web Analytics (`static.cloudflareinsights.com`) e a CSP bloqueia. É de propósito: o site não carrega script de terceiros. Para não ver o aviso no console, desligue o Web Analytics desse hostname no painel da Cloudflare.
+
 ## Comandos (no PC de desenvolvimento)
 | O quê | Comando |
 |---|---|

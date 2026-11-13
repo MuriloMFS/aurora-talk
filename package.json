@@ -15,7 +15,8 @@
     "deploy:server": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy.ps1",
     "build:desktop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1",
     "typecheck": "turbo run typecheck",
-    "test": "turbo run test"
+    "test": "turbo run test",
+    "site:screens": "node scripts/site-screens.mjs"
   },
   "devDependencies": {
     "turbo": "^2.11.10",

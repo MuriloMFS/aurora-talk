@@ -4,133 +4,294 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark light" />
-    <title>Aurora — converse, jogue e fique junto</title>
-    <meta name="description" content="Servidores com canais de texto e voz, compartilhamento de tela e tudo em um app leve para Windows. Baixe grátis." />
+    <title>Aurora — texto, voz e tela para a sua turma</title>
+    <meta name="description" content="Crie um servidor, chame os amigos com um código e converse por texto ou voz. Compartilhe a tela em até 1080p com o som do jogo. App gratuito para Windows." />
+    <meta property="og:title" content="Aurora — texto, voz e tela para a sua turma" />
+    <meta property="og:description" content="Servidores com canais de texto e voz e compartilhamento de tela, num app pequeno para Windows que se atualiza sozinho." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="/og.webp" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <!-- tema antes do 1º paint, em arquivo próprio (CSP sem scripts inline) -->
     <script src="/theme-init.js"></script>
   </head>
   <body>
-    <a class="skip-link" href="#baixar">Pular para o download</a>
-    <header class="site-header">
-      <a class="brand" href="/" aria-label="Aurora, início">
-        <img class="brand__logo" src="/favicon.svg" alt="" width="32" height="32" />
-        <span class="brand__name">Aurora</span>
-      </a>
-      <nav class="site-nav" aria-label="Principal">
-        <a href="#recursos">Recursos</a>
-        <a href="#instalar">Como instalar</a>
-        <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Trocar tema">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" /></svg>
-        </button>
-      </nav>
+    <a class="skip-link" href="#conteudo">Pular para o conteúdo</a>
+
+    <header class="topbar">
+      <div class="topbar__inner">
+        <a class="brand" href="/" aria-label="Aurora, início">
+          <img class="brand__logo" src="/favicon.svg" alt="" width="28" height="28" />
+          <span class="brand__name">Aurora</span>
+        </a>
+        <nav class="topnav" aria-label="Principal">
+          <a href="#recursos">Recursos</a>
+          <a href="#instalar">Instalar</a>
+          <a href="#perguntas">Perguntas</a>
+        </nav>
+        <div class="topbar__actions">
+          <button type="button" class="icon-button" id="theme-toggle" aria-label="Trocar tema">
+            <svg class="icon icon--moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" /></svg>
+            <svg class="icon icon--sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" /></svg>
+          </button>
+          <a class="button button--primary button--small" href="/download/windows" data-download>Baixar</a>
+        </div>
+      </div>
     </header>
 
-    <main>
+    <main id="conteudo">
+      <!-- ================= abertura ================= -->
       <section class="hero" aria-labelledby="hero-title">
-        <div class="hero__text">
-          <h1 id="hero-title" class="hero__title">Converse, jogue e fique junto.</h1>
+        <div class="hero__head">
+          <p class="eyebrow"><span class="dot" aria-hidden="true"></span><span data-release-line>Para Windows 10 e 11</span></p>
+          <h1 id="hero-title" class="hero__title">O lugar da sua turma.</h1>
+        </div>
+        <div class="hero__side">
           <p class="hero__lead">
-            Crie um servidor para a sua turma, com canais de texto e de voz, compartilhamento de tela em até 1080p e o som do jogo junto, num app leve que se atualiza sozinho.
+            Crie um servidor, chame os amigos com um código e converse por texto ou voz. Mostre a tela em até 1080p com o som do jogo junto, num app pequeno que se atualiza sozinho.
           </p>
-          <div class="hero__actions" id="baixar">
-            <a class="button button--primary button--large" id="download-button" href="/download/windows" download>
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                <polyline points="7 10 12 15 17 10" />
-                <line x1="12" x2="12" y1="15" y2="3" />
-              </svg>
+          <div class="hero__actions">
+            <a class="button button--primary button--large" href="/download/windows" data-download>
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" /></svg>
               Baixar para Windows
             </a>
-            <a class="button button--secondary button--large" href="#recursos">Ver recursos</a>
+            <a class="link-arrow" href="#instalar">Como instalar <span aria-hidden="true">→</span></a>
           </div>
-          <p class="hero__meta" id="release-meta" aria-live="polite">Windows 10 e 11 · 64 bits · grátis</p>
-          <p class="notice" id="platform-note" hidden>Por enquanto o Aurora é só para Windows. Abra esta página no seu PC para baixar.</p>
+          <p class="hero__meta" data-release-meta aria-live="polite">Grátis · 64 bits</p>
+          <p class="platform-note" id="platform-note" hidden>
+            Por enquanto o Aurora existe só para Windows. Abra esta página no computador para baixar.
+          </p>
         </div>
 
-        <!-- ilustração geométrica original do app (decorativa) -->
-        <div class="mock" aria-hidden="true">
-          <div class="mock__rail">
-            <span class="mock__tile mock__tile--active"></span>
-            <span class="mock__tile"></span>
-            <span class="mock__tile"></span>
+        <figure class="hero__shot">
+          <div class="window">
+            <div class="window__bar" aria-hidden="true">
+              <img class="window__icon" src="/favicon.svg" alt="" width="14" height="14" />
+              <span class="window__title">Aurora</span>
+              <span class="window__controls"><i class="wc wc--min"></i><i class="wc wc--max"></i><i class="wc wc--close"></i></span>
+            </div>
+            <img
+              class="shot shot--dark"
+              src="./screens/app-dark.webp"
+              width="2560"
+              height="1680"
+              fetchpriority="high"
+              alt="O Aurora aberto no servidor Turma do sábado: o canal geral com mensagens, respostas e reações, quatro pessoas na sala de voz, uma transmitindo a tela ao vivo, e a lista de membros online."
+            />
+            <img class="shot shot--light" src="./screens/app-light.webp" width="2560" height="1680" loading="lazy" alt="O mesmo servidor do Aurora no tema claro." />
           </div>
-          <div class="mock__sidebar">
-            <span class="mock__line mock__line--title"></span>
-            <span class="mock__channel mock__channel--active"><i></i></span>
-            <span class="mock__channel"><i></i></span>
-            <span class="mock__channel"><i></i></span>
-            <span class="mock__voice"><span class="mock__avatar mock__avatar--speaking"></span><i></i></span>
-            <span class="mock__voice"><span class="mock__avatar"></span><i></i></span>
-          </div>
-          <div class="mock__chat">
-            <div class="mock__message"><span class="mock__avatar mock__avatar--lg"></span><div><i class="w40"></i><i class="w90"></i><i class="w70"></i></div></div>
-            <div class="mock__message"><span class="mock__avatar mock__avatar--lg mock__avatar--alt"></span><div><i class="w30"></i><i class="w60"></i><span class="mock__reactions"><b></b><b></b></span></div></div>
-            <div class="mock__stream"><span class="mock__live">AO VIVO</span></div>
-            <span class="mock__composer"></span>
-          </div>
-        </div>
+        </figure>
       </section>
 
-      <section class="features" id="recursos" aria-labelledby="recursos-title">
-        <h2 id="recursos-title" class="section-title">Tudo o que a sua turma precisa</h2>
-        <ul class="feature-grid">
-          <li class="feature">
-            <span class="feature__icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg></span>
-            <h3 class="feature__title">Conversa de verdade</h3>
-            <p class="feature__text">Canais de texto com respostas, reações, @menções, Markdown e aviso do que você ainda não leu.</p>
-          </li>
-          <li class="feature">
-            <span class="feature__icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" x2="12" y1="19" y2="22" /></svg></span>
-            <h3 class="feature__title">Voz sem complicação</h3>
-            <p class="feature__text">Entre na sala com um clique. Veja quem está falando, mute ou ensurdeça quando quiser.</p>
-          </li>
-          <li class="feature">
-            <span class="feature__icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-3" /><path d="M8 21h8" /><path d="M12 17v4" /><path d="m17 8 5-5" /><path d="M17 3h5v5" /></svg></span>
-            <h3 class="feature__title">Tela ao vivo</h3>
-            <p class="feature__text">Mostre a tela inteira ou só uma janela, em até 1080p e 60 fps, com o som do computador e sem eco.</p>
-          </li>
-          <li class="feature">
-            <span class="feature__icon"><svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg></span>
-            <h3 class="feature__title">Leve e sempre atualizado</h3>
-            <p class="feature__text">Instalador de poucos megabytes. As novas versões chegam sozinhas, conferidas por assinatura digital.</p>
-          </li>
-        </ul>
+      <!-- ================= recursos ================= -->
+      <div class="features" id="recursos">
+        <section class="feature" aria-labelledby="f-texto">
+          <div class="feature__copy">
+            <p class="eyebrow">Texto</p>
+            <h2 id="f-texto" class="feature__title">Conversas que não se perdem.</h2>
+            <p class="feature__lead">
+              Responda citando a mensagem, reaja e marque alguém com @. O Aurora lembra o que você já leu, então dá para voltar depois e continuar de onde parou, no PC de casa ou no do trabalho.
+            </p>
+            <ul class="checks">
+              <li>A resposta mostra o trecho original e leva até ele</li>
+              <li>Quem é mencionado recebe um aviso do Windows</li>
+              <li>
+                <span class="md-sample"><b>negrito</b>, <code>código</code>, citação e spoiler</span>
+              </li>
+              <li>Mostra quem está digitando, na hora</li>
+            </ul>
+          </div>
+          <figure class="feature__media">
+            <div class="frame">
+              <img class="shot shot--dark" src="./screens/chat-dark.webp" width="1456" height="1680" loading="lazy" alt="Canal geral com uma resposta citando a mensagem original, reações com emoji, um bloco de código e uma menção destacada." />
+              <img class="shot shot--light" src="./screens/chat-light.webp" width="1456" height="1680" loading="lazy" alt="O mesmo canal no tema claro." />
+            </div>
+          </figure>
+        </section>
+
+        <section class="feature feature--flip" aria-labelledby="f-voz">
+          <div class="feature__copy">
+            <p class="eyebrow">Voz</p>
+            <h2 id="f-voz" class="feature__title">Um clique e você está na sala.</h2>
+            <p class="feature__lead">
+              Veja quem está na voz, quem está mutado e quem está transmitindo. Sons curtos avisam quando alguém entra, sai ou muta, sem precisar olhar a tela.
+            </p>
+            <ul class="checks">
+              <li>Funciona fora de casa sem abrir portas no roteador</li>
+              <li>Cancelamento de eco e supressão de ruído</li>
+              <li>
+                Mute com <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>M</kbd> e ensurdeça com <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>D</kbd>
+              </li>
+            </ul>
+          </div>
+          <figure class="feature__media feature__media--narrow">
+            <div class="frame frame--tall">
+              <img class="shot shot--dark" src="./screens/voice-dark.webp" width="480" height="1200" loading="lazy" alt="Lista de canais com a Sala de voz: Davi, Luisa (ao vivo), Rafa (mutado) e Lia. Embaixo, o painel com Voz conectada e os botões de microfone, fone, tela e sair." />
+              <img class="shot shot--light" src="./screens/voice-light.webp" width="480" height="1200" loading="lazy" alt="A mesma lista de canais no tema claro." />
+            </div>
+          </figure>
+        </section>
+
+        <section class="feature" aria-labelledby="f-tela">
+          <div class="feature__copy">
+            <p class="eyebrow">Tela</p>
+            <h2 id="f-tela" class="feature__title">Mostre a tela, com o som junto.</h2>
+            <p class="feature__lead">
+              Tela inteira ou só uma janela, em três qualidades, até 1080p a 60 quadros por segundo. O som do computador vai junto e as vozes da sala ficam de fora, então ninguém ouve eco.
+            </p>
+            <dl class="specs">
+              <div><dt>Leve</dt><dd>720p · 30 fps</dd></div>
+              <div><dt>Padrão</dt><dd>1080p · 30 fps</dd></div>
+              <div><dt>Fluida</dt><dd>1080p · 60 fps</dd></div>
+            </dl>
+          </div>
+          <figure class="feature__media">
+            <div class="frame">
+              <img class="shot shot--dark" src="./screens/share-dark.webp" width="1296" height="1406" loading="lazy" alt="Janela Transmitir sua tela: escolha entre tela inteira ou uma janela, três qualidades (Leve, Padrão e Fluida) e a opção de transmitir o som do computador." />
+              <img class="shot shot--light" src="./screens/share-light.webp" width="1296" height="1406" loading="lazy" alt="A mesma janela no tema claro." />
+            </div>
+          </figure>
+        </section>
+
+        <section class="feature feature--wide" aria-labelledby="f-ajustes">
+          <div class="feature__copy">
+            <p class="eyebrow">Configurações</p>
+            <h2 id="f-ajustes" class="feature__title">Do seu jeito, até o último detalhe.</h2>
+            <p class="feature__lead">
+              Escolha microfone e fone, teste a voz antes de entrar, troque o tema, aumente o texto e deixe o Aurora na bandeja, abrindo junto com o Windows.
+            </p>
+          </div>
+          <figure class="feature__media">
+            <div class="window window--flat">
+              <div class="window__bar" aria-hidden="true">
+                <img class="window__icon" src="/favicon.svg" alt="" width="14" height="14" />
+                <span class="window__title">Aurora · Configurações</span>
+                <span class="window__controls"><i class="wc wc--min"></i><i class="wc wc--max"></i><i class="wc wc--close"></i></span>
+              </div>
+              <img class="shot shot--dark" src="./screens/settings-dark.webp" width="2560" height="1680" loading="lazy" alt="Configurações, seção Voz e vídeo: microfone, alto-falante, volumes, teste do microfone e perfil de entrada." />
+              <img class="shot shot--light" src="./screens/settings-light.webp" width="2560" height="1680" loading="lazy" alt="As mesmas configurações no tema claro." />
+            </div>
+          </figure>
+        </section>
+      </div>
+
+      <!-- ================= em números ================= -->
+      <section class="facts" aria-label="O app em números">
+        <dl class="facts__list">
+          <div class="fact">
+            <dt>Instalador</dt>
+            <dd><span data-release-size>poucos MB</span><span class="fact__note">um só arquivo .exe</span></dd>
+          </div>
+          <div class="fact">
+            <dt>Atualizações</dt>
+            <dd>Automáticas<span class="fact__note">conferidas por assinatura digital</span></dd>
+          </div>
+          <div class="fact">
+            <dt>Sistema</dt>
+            <dd>Windows 10 e 11<span class="fact__note">64 bits</span></dd>
+          </div>
+          <div class="fact">
+            <dt>Preço</dt>
+            <dd>Grátis<span class="fact__note">sem anúncios</span></dd>
+          </div>
+        </dl>
       </section>
 
+      <!-- ================= instalar ================= -->
       <section class="install" id="instalar" aria-labelledby="instalar-title">
-        <h2 id="instalar-title" class="section-title">Como instalar</h2>
+        <div class="section-head">
+          <p class="eyebrow">Instalar</p>
+          <h2 id="instalar-title" class="section-title">Pronto em um minuto.</h2>
+        </div>
         <ol class="steps">
           <li class="step">
-            <span class="step__number" aria-hidden="true">1</span>
-            <div>
-              <h3 class="step__title">Baixe o instalador</h3>
-              <p class="step__text">Clique em <a href="/download/windows" download>Baixar para Windows</a>.</p>
-            </div>
+            <span class="step__n" aria-hidden="true">1</span>
+            <h3 class="step__title">Baixe o instalador</h3>
+            <p class="step__text">Clique em <a href="/download/windows" data-download>Baixar para Windows</a>. O arquivo se chama <code>Aurora_<span data-release-version>…</span>_x64-setup.exe</code>.</p>
           </li>
           <li class="step">
-            <span class="step__number" aria-hidden="true">2</span>
-            <div>
-              <h3 class="step__title">Abra o arquivo baixado</h3>
-              <p class="step__text">
-                Se o Windows mostrar "O Windows protegeu o computador", clique em <strong>Mais informações</strong> e depois em <strong>Executar assim mesmo</strong>. O aviso aparece porque o Aurora ainda não tem certificado de assinatura de código.
-              </p>
-            </div>
+            <span class="step__n" aria-hidden="true">2</span>
+            <h3 class="step__title">Abra o arquivo</h3>
+            <p class="step__text">
+              Se aparecer <q>O Windows protegeu o computador</q>, clique em <strong>Mais informações</strong> e depois em <strong>Executar assim mesmo</strong>. Em inglês, os botões são <em>More info</em> e <em>Run anyway</em>.
+            </p>
           </li>
           <li class="step">
-            <span class="step__number" aria-hidden="true">3</span>
-            <div>
-              <h3 class="step__title">Crie sua conta</h3>
-              <p class="step__text">Escolha um usuário e uma senha, crie seu servidor e chame a turma com um código de convite.</p>
-            </div>
+            <span class="step__n" aria-hidden="true">3</span>
+            <h3 class="step__title">Entre e chame a turma</h3>
+            <p class="step__text">Crie sua conta, abra um servidor e mande o código de convite para os amigos.</p>
           </li>
         </ol>
       </section>
+
+      <!-- ================= perguntas ================= -->
+      <section class="faq" id="perguntas" aria-labelledby="perguntas-title">
+        <div class="section-head">
+          <p class="eyebrow">Perguntas</p>
+          <h2 id="perguntas-title" class="section-title">O que costumam perguntar.</h2>
+        </div>
+        <div class="faq__list">
+          <details>
+            <summary>Por que o Windows mostra um aviso na hora de instalar?</summary>
+            <p>
+              O aviso aparece em todo programa novo que ainda não tem certificado de assinatura de código, um selo pago que o Aurora ainda não tem. As atualizações não passam por esse aviso: cada versão nova é baixada pelo próprio app, que confere a assinatura digital antes de instalar.
+            </p>
+          </details>
+          <details>
+            <summary>Quanto custa?</summary>
+            <p>Nada. Baixar, criar servidores, falar e transmitir a tela é grátis.</p>
+          </details>
+          <details>
+            <summary>Funciona no Mac, no Linux ou no celular?</summary>
+            <p>Ainda não. Por enquanto o Aurora existe só para Windows 10 e 11 de 64 bits.</p>
+          </details>
+          <details>
+            <summary>Preciso abrir portas no roteador para a voz funcionar?</summary>
+            <p>
+              Não. Quando não dá para conectar direto, a voz e a tela passam por um retransmissor, sempre criptografadas, e você não precisa configurar nada.
+            </p>
+          </details>
+          <details>
+            <summary>Como as atualizações chegam?</summary>
+            <p>
+              Ao abrir, o Aurora procura uma versão nova e instala sozinho. Com o app aberto, ele verifica de novo a cada 15 minutos e mostra um botão de atualizar no topo. O app só aceita pacotes assinados pelo projeto.
+            </p>
+          </details>
+          <details>
+            <summary>E a minha senha?</summary>
+            <p>
+              A senha nunca é guardada como texto: o servidor guarda só um resumo dela, feito com scrypt. Em Configurações, Minha conta, você troca a senha, e os outros aparelhos conectados saem na hora.
+            </p>
+          </details>
+        </div>
+      </section>
+
+      <!-- ================= fechamento ================= -->
+      <section class="closing" aria-labelledby="closing-title">
+        <h2 id="closing-title" class="closing__title">Chame a turma.</h2>
+        <p class="closing__text">Baixe, crie um servidor e mande o convite. O resto o Aurora resolve.</p>
+        <a class="button button--primary button--large" href="/download/windows" data-download>
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" /></svg>
+          Baixar para Windows
+        </a>
+        <p class="closing__meta" data-release-meta>Grátis · 64 bits</p>
+      </section>
     </main>
 
-    <footer class="site-footer">
-      <span>© 2026 Aurora (nome provisório)</span>
-      <span id="footer-version"></span>
+    <footer class="footer">
+      <div class="footer__inner">
+        <div class="footer__brand">
+          <img src="/favicon.svg" alt="" width="20" height="20" />
+          <span>Aurora</span>
+          <span class="footer__muted">nome provisório</span>
+        </div>
+        <nav class="footer__nav" aria-label="Rodapé">
+          <a href="#recursos">Recursos</a>
+          <a href="#instalar">Instalar</a>
+          <a href="#perguntas">Perguntas</a>
+          <a href="https://github.com/MuriloMFS/aurora-talk" rel="noopener">Código-fonte</a>
+        </nav>
+        <p class="footer__muted"><span data-release-version-label>Versão atual</span> · © 2026</p>
+      </div>
     </footer>
     <script type="module" src="/src/main.ts"></script>
   </body>
