@@ -722,6 +722,31 @@
     outline: var(--ring-width) solid Highlight;
   }
 }
+/* apertar para falar: o estado está escrito; a cor só reforça */
+.voice-panel__ptt {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.voice-panel__ptt--open {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+.voice-panel__ptt--open::before {
+  content: "";
+  flex: none;
+  width: var(--unread-dot);
+  height: var(--unread-dot);
+  border-radius: var(--radius-full);
+  background: var(--success);
+}
 .voice-panel__notice {
   margin: 0;
   color: var(--text-secondary);

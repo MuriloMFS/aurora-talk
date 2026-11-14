@@ -4,6 +4,7 @@ import { effectiveProcessing, patchSettings, useSettings, type InputProfile, typ
 import { QUALITIES, loadScreenShareOptions, saveScreenShareOptions, spec } from "../ScreenShareDialog";
 import { voiceSettingsOf } from "../../voice-settings";
 import { RadioCards, SelectField, SettingsGroup, SliderField, SwitchRow } from "./controls";
+import { PushToTalkSettings } from "./PushToTalkSettings";
 
 const PROFILES: { value: InputProfile; title: string; hint: string }[] = [
   { value: "isolation", title: "Isolar a voz", hint: "Tira eco, ruído de fundo e equilibra o volume. Melhor para a maioria." },
@@ -151,6 +152,8 @@ export function VoiceSection({ platform }: { platform: PlatformInfo | null }) {
         )}
         <p className="field__hint">Fale normalmente: a barra deve ficar mais ou menos no meio. Se ficar sempre no fim, baixe o volume do microfone.</p>
       </SettingsGroup>
+
+      <PushToTalkSettings platform={platform} />
 
       <SettingsGroup title="Tratamento do microfone">
         <RadioCards legend="Perfil de entrada" name="voice-profile" value={voice.profile} options={PROFILES} onChange={(profile) => setVoice({ profile })} />

@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { isWebUrl, type DesktopSettings, type PlatformPort, type SystemAudioCapture, type UpdateInfo, type UpdateProgress } from "./index";
 import { BADGE_SIZE, drawBadge } from "./badge";
 import { pcmChunkToAudioDataInit } from "./system-audio";
+import { pttVirtualKey } from "./push-to-talk";
 
 /** API do Chromium (não está na lib DOM do TypeScript): trilha de áudio alimentada pela página. */
 type AudioTrackGenerator = MediaStreamTrack & { writable: WritableStream<AudioData> };
@@ -15,7 +16,7 @@ export function createTauriPlatform(): PlatformPort {
     async getInfo() {
       // A captura nativa (loopback por processo) é do Windows; nos demais, o seletor do sistema.
       const windows = /Windows/i.test(globalThis.navigator?.userAgent ?? "");
-      return { kind: "tauri", appVersion: await getVersion(), systemAudio: windows ? "native" : "picker" };
+      return { kind: "tauri", appVersion: await getVersion(), systemAudio: windows ? "native" : "picker", pushToTalk: windows ? "global" : "focused" };
     },
     // Comandos Rust em apps/desktop/src-tauri/src/lib.rs
     checkForUpdate(serverUrl) {
@@ -84,6 +85,25 @@ export function createTauriPlatform(): PlatformPort {
     },
     async getIdleSeconds() {
       return invoke<number>("idle_seconds");
+    },
+    // Rust em apps/desktop/src-tauri/src/push_to_talk.rs: consulta só esta tecla, sem gancho de teclado.
+    async watchPushToTalk(code, onChange) {
+      const vk = pttVirtualKey(code);
+      if (vk === null) throw new Error("Essa tecla não pode ser usada para apertar para falar. Escolha outra.");
+      let active = true;
+      const channel = new Channel<boolean>();
+      channel.onmessage = (pressed) => active && onChange(pressed);
+      try {
+        await invoke("ptt_watch", { vk, onChange: channel });
+      } catch (error) {
+        throw new Error(typeof error === "string" ? error : "Não foi possível observar a tecla de apertar para falar.");
+      }
+      return () => {
+        if (!active) return;
+        active = false;
+        channel.onmessage = () => undefined;
+        void invoke("ptt_stop").catch(() => undefined);
+      };
     },
     // Rust em apps/desktop/src-tauri/src/desktop_settings.rs (registro do Windows + arquivo do app).
     getDesktopSettings() {

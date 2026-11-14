@@ -150,6 +150,11 @@
   - Busca de pessoas na barra do topo.
   - Lista de membros agrupada por cargo ou por status (Online, Ausente, Não perturbe, Offline).
 - **1.13.1** — **texto no tamanho certo**: a escala de texto foi recalibrada para a Inter (base 14 px em vez de 16, títulos menores, linhas mais justas), que desenhava tudo ~12% maior que o comum no gênero ([medição](spikes/tipografia.md)). O tamanho do chat que estava no padrão antigo passa para 14 px; quem escolheu outro mantém.
+- **1.14.0** — **apertar para falar**:
+  - Em Configurações → Voz e vídeo → Modo de entrada: escolha uma tecla ou um botão do meio ou lateral do mouse. Funciona com o Aurora em segundo plano e com jogo na frente.
+  - O Aurora observa só a tecla escolhida, e só enquanto você está numa sala de voz.
+  - Atraso ao soltar ajustável e sons de abrir e fechar (dá para desligar em Sons).
+  - O painel de voz mostra "Aperte V para falar" ou "Microfone aberto".
 
 ## O que fica para depois (ordem sugerida)
 escolha de microfone/fone · DMs e amigos · anexos e prévia de links · cargos e permissões (pacote `permissions` do doc 03) · lista virtualizada para canais grandes · servidor hospedado (VPS) com HTTPS · depois, o restante do roadmap.

@@ -163,7 +163,7 @@ export const SHORTCUTS: { keys: string[]; action: string }[] = [
 
 export function KeybindsSection() {
   return (
-    <SettingsGroup title="Teclado" description="Funcionam com a janela do Aurora em foco. Atalhos que funcionam dentro de jogos (e apertar para falar) chegam numa próxima versão.">
+    <SettingsGroup title="Teclado" description="Funcionam com a janela do Aurora em foco. Apertar para falar, que funciona até dentro de jogos, fica em Voz → Modo de entrada.">
       <dl className="shortcuts">
         {SHORTCUTS.map((shortcut) => (
           <div key={shortcut.action} className="shortcuts__row">

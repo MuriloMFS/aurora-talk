@@ -1,6 +1,7 @@
 use std::sync::Mutex;
 
 mod desktop_settings;
+mod push_to_talk;
 mod system_audio;
 
 use desktop_settings::DesktopPrefs;
@@ -242,6 +243,7 @@ pub fn run() {
         .manage(PendingUpdate::default())
         .manage(DesktopPrefs::default())
         .manage(system_audio::SystemAudio::default())
+        .manage(push_to_talk::PushToTalk::default())
         .invoke_handler(tauri::generate_handler![
             check_update,
             install_update,
@@ -250,6 +252,8 @@ pub fn run() {
             idle_seconds,
             system_audio::system_audio_start,
             system_audio::system_audio_stop,
+            push_to_talk::ptt_watch,
+            push_to_talk::ptt_stop,
             desktop_settings::get_desktop_settings,
             desktop_settings::set_desktop_settings
         ])

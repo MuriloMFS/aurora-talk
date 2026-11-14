@@ -9,3 +9,6 @@ export const voiceSettingsOf = (voice: VoicePrefs): VoiceSettings => ({
   outputVolume: voice.outputVolume,
   ...effectiveProcessing(voice),
 });
+
+/** Apertar para falar só vale com o modo ligado e uma tecla escolhida. */
+export const pushToTalkOn = (voice: VoicePrefs): boolean => voice.inputMode === "ptt" && voice.pttKey !== null;

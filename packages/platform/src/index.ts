@@ -9,6 +9,7 @@ import type { ScreenShareOptions, ScreenShareResult } from "./screen-share";
 
 export * from "./audio";
 export * from "./screen-share";
+export * from "./push-to-talk";
 
 export type PlatformKind = "tauri" | "browser";
 
@@ -22,6 +23,11 @@ export interface PlatformInfo {
    * "picker" = depende da opção de áudio do seletor do sistema.
    */
   systemAudio: "native" | "picker";
+  /**
+   * Apertar para falar: "global" = funciona com o app em segundo plano (inclusive com um jogo na frente);
+   * "focused" = só com a janela do app em foco (navegador).
+   */
+  pushToTalk: "global" | "focused";
 }
 
 /** Som do sistema capturado pelo app (sem o próprio app), já como trilha WebRTC. */
@@ -81,6 +87,11 @@ export interface PlatformPort {
    * no navegador, só dentro da página. Serve para o status "Ausente" automático.
    */
   getIdleSeconds(): Promise<number>;
+  /**
+   * Observa a tecla (ou botão do mouse) de apertar para falar — código de `pttCodeFromEvent` — e avisa
+   * quando desce (true) e sobe (false). Devolve a função que para de observar.
+   */
+  watchPushToTalk(code: string, onChange: (pressed: boolean) => void): Promise<() => void>;
 }
 
 /** Só links da web saem do app (evita `file:`, `javascript:` etc.). */
@@ -126,12 +137,18 @@ export interface MediaCredentials {
 
 /** Voz/vídeo. A UI nunca chama o LiveKit (ou um motor nativo futuro) direto — só esta interface. */
 export interface MediaEngine {
-  join(credentials: MediaCredentials, events: MediaEngineEvents, options: { muted: boolean; deafened: boolean; voice?: VoiceSettings }): Promise<void>;
+  /** `pushToTalk`: false = entra no modo apertar para falar com a tecla solta (microfone pronto, fechado). */
+  join(credentials: MediaCredentials, events: MediaEngineEvents, options: { muted: boolean; deafened: boolean; voice?: VoiceSettings; pushToTalk?: boolean | null }): Promise<void>;
   /** Troca microfone, alto-falante, volumes ou processamento, inclusive no meio da chamada. */
   applyVoiceSettings(settings: VoiceSettings): Promise<void>;
   leave(): Promise<void>;
   setMuted(muted: boolean): Promise<void>;
   setDeafened(deafened: boolean): void;
+  /**
+   * Apertar para falar: true = tecla apertada (microfone aberto), false = solta (fechado, mas pronto
+   * para abrir na hora), null = modo desligado (detecção de voz). Mudo continua vencendo a tecla.
+   */
+  setPushToTalk(open: boolean | null): Promise<void>;
   /**
    * Abre o seletor do sistema (já na aba de `surface`) e transmite na qualidade pedida.
    * Cancelar o seletor rejeita com NotAllowedError. Se só o áudio falhar, a tela segue sem som (`audio: "failed"`).

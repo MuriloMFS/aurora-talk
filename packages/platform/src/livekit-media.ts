@@ -47,6 +47,12 @@ export class LiveKitMediaEngine implements MediaEngine {
   private systemAudio: SystemAudioCapture | null = null;
   /** Dispositivos, volumes e processamento escolhidos nas configurações. */
   private voice: VoiceSettings = DEFAULT_VOICE_SETTINGS;
+  /** Microfone desligado pela pessoa (ou ensurdecida, ou sem permissão). */
+  private userMuted = true;
+  /** Apertar para falar: null = desligado; senão, se a tecla está apertada. */
+  private pushToTalk: boolean | null = null;
+  /** Mudanças do microfone em fila: apertar e soltar rápido não podem se atropelar. */
+  private micQueue: Promise<void> = Promise.resolve();
 
   private readonly platform: PlatformPort;
   private readonly info: PlatformInfo;
@@ -56,7 +62,7 @@ export class LiveKitMediaEngine implements MediaEngine {
     this.info = info;
   }
 
-  async join(credentials: MediaCredentials, events: MediaEngineEvents, options: { muted: boolean; deafened: boolean; voice?: VoiceSettings }): Promise<void> {
+  async join(credentials: MediaCredentials, events: MediaEngineEvents, options: { muted: boolean; deafened: boolean; voice?: VoiceSettings; pushToTalk?: boolean | null }): Promise<void> {
     await this.leave();
     if (options.voice) this.voice = options.voice;
     const room = new Room({
@@ -92,8 +98,9 @@ export class LiveKitMediaEngine implements MediaEngine {
     events.onStateChange("connecting");
     const rtcConfig = rtcConfigFor(credentials);
     await room.connect(credentials.url, credentials.token, rtcConfig && { rtcConfig });
-    await room.localParticipant.setMicrophoneEnabled(!options.muted && !options.deafened);
-    await this.applyMicrophoneVolume();
+    this.userMuted = options.muted || options.deafened;
+    this.pushToTalk = options.pushToTalk ?? null;
+    await this.updateMicrophone();
     events.onStateChange("connected");
   }
 
@@ -136,6 +143,8 @@ export class LiveKitMediaEngine implements MediaEngine {
   async leave(): Promise<void> {
     const room = this.room;
     this.room = null;
+    this.pushToTalk = null;
+    this.userMuted = true;
     await this.stopSystemAudio();
     if (room) {
       room.removeAllListeners();
@@ -149,8 +158,53 @@ export class LiveKitMediaEngine implements MediaEngine {
   }
 
   async setMuted(muted: boolean): Promise<void> {
-    await this.room?.localParticipant.setMicrophoneEnabled(!muted);
-    if (!muted) await this.applyMicrophoneVolume(); // o microfone pode ter nascido agora
+    this.userMuted = muted;
+    await this.updateMicrophone();
+  }
+
+  async setPushToTalk(open: boolean | null): Promise<void> {
+    this.pushToTalk = open;
+    await this.updateMicrophone();
+  }
+
+  /** Aplica (em fila) o estado do microfone: mudo vence; no apertar para falar, só abre com a tecla. */
+  private updateMicrophone(): Promise<void> {
+    const run = this.micQueue.then(() => this.applyMicrophoneState());
+    this.micQueue = run.catch(() => undefined);
+    return run;
+  }
+
+  private async applyMicrophoneState(): Promise<void> {
+    const room = this.room;
+    if (!room) return;
+    const local = room.localParticipant;
+    if (this.userMuted) {
+      await local.setMicrophoneEnabled(false);
+      return;
+    }
+    const open = this.pushToTalk !== false;
+    const microphone = this.microphone();
+    if (microphone) {
+      // trilha já existe: abrir e fechar é só ligar/desligar o envio (rápido, sem pedir o dispositivo de novo)
+      if (open && microphone.isMuted) await microphone.unmute();
+      else if (!open && !microphone.isMuted) await microphone.mute();
+      return;
+    }
+    if (open) {
+      await local.setMicrophoneEnabled(true);
+      await this.applyMicrophoneVolume(); // o microfone nasceu agora
+      return;
+    }
+    // apertar para falar com a tecla solta: prepara o microfone já fechado, para a 1ª fala não demorar
+    const [track] = await local.createTracks({ audio: captureOptions(this.voice) });
+    if (!track || this.room !== room) {
+      track?.stop();
+      return;
+    }
+    await track.mute();
+    await local.publishTrack(track, { source: Track.Source.Microphone });
+    await this.applyMicrophoneVolume();
+    if (this.pushToTalk !== false && !this.userMuted) await track.unmute(); // apertou enquanto preparava
   }
 
   setDeafened(deafened: boolean): void {

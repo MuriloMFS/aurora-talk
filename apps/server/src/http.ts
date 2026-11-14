@@ -64,7 +64,7 @@ import { nextId } from "./ids.ts";
 import type { IceServerSource } from "./turn.ts";
 import { registerUpdateRoutes } from "./updates.ts";
 
-export const SERVER_VERSION = "1.13.1";
+export const SERVER_VERSION = "1.14.0";
 
 export class HttpError extends Error {
   readonly status: number;

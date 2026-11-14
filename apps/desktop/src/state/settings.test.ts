@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SETTINGS, SETTINGS_STORAGE_KEY, createSettingsStore, effectiveProcessing, loadSettings, sanitizeSettings, type AppSettings } from "./settings";
+import { pushToTalkOn } from "../voice-settings";
 import { SOUND_IDS, SOUND_LABELS, SOUND_NOTES, soundDuration, voiceEventSound } from "../sounds";
 
 describe("preferências deste aparelho", () => {
@@ -34,6 +35,15 @@ describe("preferências deste aparelho", () => {
     expect(sanitizeSettings({ appearance: { chatFontSize: 18 } }).appearance.chatFontSize).toBe(18);
     expect(sanitizeSettings({ appearance: { chatFontSize: 16, typeScale: 2 } }).appearance.chatFontSize).toBe(16); // escolhido já na escala nova
     expect(sanitizeSettings({ appearance: { chatFontSize: 13 } }).appearance.chatFontSize).toBe(13);
+  });
+
+  it("apertar para falar: tecla inválida some, atraso preso à faixa, modo estranho volta ao padrão", () => {
+    const ok = sanitizeSettings({ voice: { inputMode: "ptt", pttKey: "Mouse4", pttKeyLabel: "Botão lateral", pttReleaseMs: 5000 } }).voice;
+    expect(ok).toMatchObject({ inputMode: "ptt", pttKey: "Mouse4", pttKeyLabel: "Botão lateral", pttReleaseMs: 1000 });
+    const bad = sanitizeSettings({ voice: { inputMode: "sempre", pttKey: "Mouse1", pttKeyLabel: "x", pttReleaseMs: -3 } }).voice;
+    expect(bad).toMatchObject({ inputMode: "voice", pttKey: null, pttKeyLabel: null, pttReleaseMs: 0 });
+    expect(pushToTalkOn({ ...DEFAULT_SETTINGS.voice, inputMode: "ptt" })).toBe(false); // sem tecla, segue como detecção de voz
+    expect(pushToTalkOn({ ...DEFAULT_SETTINGS.voice, inputMode: "ptt", pttKey: "KeyV" })).toBe(true);
   });
 
   it("perfil de entrada decide o processamento de voz", () => {

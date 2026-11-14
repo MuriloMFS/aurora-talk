@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { PTT_RELEASE_DEFAULT, PTT_RELEASE_MAX, PTT_RELEASE_MIN, pttVirtualKey } from "@aurora/platform";
 import { SOUND_IDS, type SoundId } from "../sounds";
 
 /**
@@ -12,6 +13,8 @@ export type Density = "cozy" | "compact";
 export type MotionPreference = "system" | "reduce";
 /** Perfil de entrada do microfone: isolar a voz (tudo ligado), estúdio (som puro) ou escolher. */
 export type InputProfile = "isolation" | "studio" | "custom";
+/** Como o microfone abre: detecção de voz (aberto o tempo todo) ou apertar para falar. */
+export type InputMode = "voice" | "ptt";
 
 export interface VoicePrefs {
   /** "default" = o dispositivo padrão do Windows. */
@@ -26,6 +29,13 @@ export interface VoicePrefs {
   echoCancellation: boolean;
   noiseSuppression: boolean;
   autoGainControl: boolean;
+  inputMode: InputMode;
+  /** Tecla (KeyboardEvent.code) ou "Mouse3/4/5" do apertar para falar; null = ainda não escolhida. */
+  pttKey: string | null;
+  /** Nome da tecla como a pessoa vê no teclado (guardado na escolha). */
+  pttKeyLabel: string | null;
+  /** Atraso ao soltar a tecla, em ms. */
+  pttReleaseMs: number;
 }
 
 export interface AppSettings {
@@ -76,6 +86,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
     echoCancellation: true,
     noiseSuppression: true,
     autoGainControl: true,
+    inputMode: "voice",
+    pttKey: null,
+    pttKeyLabel: null,
+    pttReleaseMs: PTT_RELEASE_DEFAULT,
   },
   sounds: { volume: 50, enabled: Object.fromEntries(SOUND_IDS.map((id) => [id, true])) as Record<SoundId, boolean> },
   notifications: { desktop: true, badge: true, flash: true },
@@ -112,6 +126,7 @@ export function sanitizeSettings(raw: unknown): AppSettings {
   const appearance = obj(root.appearance);
   const accessibility = obj(root.accessibility);
   const presence = obj(root.presence);
+  const pttKey = typeof voice.pttKey === "string" && pttVirtualKey(voice.pttKey) !== null ? voice.pttKey : null;
   const savedSize = num(appearance.chatFontSize, 12, 24, d.appearance.chatFontSize);
   // quem nunca mexeu ficou com o padrão antigo (16): passa para o novo padrão
   const fontSize = appearance.typeScale !== TYPE_SCALE && savedSize === 16 ? d.appearance.chatFontSize : savedSize;
@@ -125,6 +140,10 @@ export function sanitizeSettings(raw: unknown): AppSettings {
       echoCancellation: bool(voice.echoCancellation, d.voice.echoCancellation),
       noiseSuppression: bool(voice.noiseSuppression, d.voice.noiseSuppression),
       autoGainControl: bool(voice.autoGainControl, d.voice.autoGainControl),
+      inputMode: oneOf(voice.inputMode, ["voice", "ptt"], d.voice.inputMode),
+      pttKey: pttKey,
+      pttKeyLabel: pttKey && typeof voice.pttKeyLabel === "string" && voice.pttKeyLabel.length <= 40 ? voice.pttKeyLabel : null,
+      pttReleaseMs: num(voice.pttReleaseMs, PTT_RELEASE_MIN, PTT_RELEASE_MAX, d.voice.pttReleaseMs),
     },
     sounds: {
       volume: num(sounds.volume, 0, 100, d.sounds.volume),

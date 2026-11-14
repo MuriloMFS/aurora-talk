@@ -4,6 +4,8 @@ import type { ThemePreference } from "@aurora/ui/theme";
 import {
   createMediaEngine,
   createPlatform,
+  PushToTalkGate,
+  pttKeyLabel,
   type MediaEngine,
   type PlatformInfo,
   type PlatformPort,
@@ -48,7 +50,7 @@ import { SettingsScreen, type SettingsSectionId } from "./ui/settings/SettingsSc
 import { GuildSettingsScreen } from "./ui/settings/GuildSettingsScreen";
 import { SoundPlayer, voiceEventSound, type SoundId } from "./sounds";
 import { settingsStore, useSettings, type AppSettings } from "./state/settings";
-import { voiceSettingsOf } from "./voice-settings";
+import { pushToTalkOn, voiceSettingsOf } from "./voice-settings";
 
 type Dialog = "createGuild" | "joinGuild" | "createChannel" | "invite" | "screenShare" | null;
 
@@ -435,7 +437,7 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
             onSpeakingChange: setSpeaking,
             onScreenSharesChange: setScreenShares,
           },
-          { muted, deafened: false, voice: voiceSettingsOf(settingsStore.get().voice) },
+          { muted, deafened: false, voice: voiceSettingsOf(settingsStore.get().voice), pushToTalk: pushToTalkOn(settingsStore.get().voice) ? false : null },
         );
         if (voiceRef.current?.channelId !== voiceChannelId) return; // saiu enquanto conectava
         gatewayRef.current?.sendVoiceJoin(voiceChannelId, muted, false);
@@ -549,6 +551,51 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
     return () => clearTimeout(timer);
   }, [nextTimeoutEnd]);
   const toggleDeafen = () => voiceRef.current && void updateVoiceFlags(!voiceRef.current.deafened, !voiceRef.current.deafened);
+
+  // ---- apertar para falar (Configurações → Voz) ----
+  const pttOn = pushToTalkOn(settings.voice);
+  const pttKey = pttOn ? settings.voice.pttKey : null;
+  const [pttOpen, setPttOpen] = useState(false);
+  const gateRef = useRef<PushToTalkGate | null>(null);
+  const voiceConnected = voice?.status === "connected";
+  const voiceChannelNow = voice?.channelId ?? null;
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!voiceChannelNow || !voiceConnected || !engine) return;
+    if (!pttKey) {
+      void engine.setPushToTalk(null).catch(() => undefined);
+      return;
+    }
+    const port = portRef.current;
+    if (!port) return;
+    let active = true;
+    let stopWatching: (() => void) | null = null;
+    const gate = new PushToTalkGate(settingsStore.get().voice.pttReleaseMs, (open) => {
+      setPttOpen(open);
+      engine.setPushToTalk(open).catch((error: unknown) => setVoiceError(voiceErrorMessage(error)));
+      const current = voiceRef.current;
+      if (active && current && !current.muted && !current.deafened) playSound(open ? "pttOn" : "pttOff");
+    });
+    gateRef.current = gate;
+    void engine.setPushToTalk(false).catch(() => undefined);
+    port
+      .watchPushToTalk(pttKey, (pressed) => gate.set(pressed))
+      .then((stop) => {
+        if (active) stopWatching = stop;
+        else stop();
+      })
+      .catch((error: unknown) => setVoiceError(error instanceof Error ? error.message : "Não foi possível usar a tecla de apertar para falar."));
+    return () => {
+      active = false;
+      stopWatching?.();
+      gate.dispose();
+      gateRef.current = null;
+      setPttOpen(false);
+    };
+  }, [voiceChannelNow, voiceConnected, pttKey, platform, playSound]); // platform: a porta nativa fica pronta junto com ele
+  useEffect(() => {
+    gateRef.current?.setReleaseDelay(settings.voice.pttReleaseMs);
+  }, [settings.voice.pttReleaseMs]);
 
   // ---- atalhos de teclado (Configurações → Atalhos de teclado) ----
   const shortcutsRef = useRef({ toggleMute, toggleDeafen });
@@ -834,6 +881,7 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
             canSpeak={hasPermission(voicePermissions, "SPEAK")}
             canStream={hasPermission(voicePermissions, "STREAM")}
             serverMuted={serverMuted}
+            pushToTalk={pttOn && voice ? { label: settings.voice.pttKeyLabel ?? pttKeyLabel(settings.voice.pttKey ?? ""), open: pttOpen } : null}
             canConnect={(id) => hasPermission(myChannelPermissions(state, id), "CONNECT")}
             voiceModeration={voiceModeration}
             onModerateVoice={(userId, action) => {

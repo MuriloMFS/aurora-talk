@@ -9,7 +9,7 @@ describe("PlatformPort", () => {
   it("a implementação browser responde sem APIs nativas", async () => {
     const platform = await createPlatform("browser");
     expect(platform.kind).toBe("browser");
-    await expect(platform.getInfo()).resolves.toEqual({ kind: "browser", appVersion: "dev", systemAudio: "picker" });
+    await expect(platform.getInfo()).resolves.toEqual({ kind: "browser", appVersion: "dev", systemAudio: "picker", pushToTalk: "focused" });
   });
 
   it("só links da web saem do app; selo vira 9+ acima de 9", () => {

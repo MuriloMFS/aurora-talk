@@ -16,6 +16,8 @@ export const SOUND_IDS = [
   "streamStart",
   "streamStop",
   "mention",
+  "pttOn",
+  "pttOff",
 ] as const;
 export type SoundId = (typeof SOUND_IDS)[number];
 
@@ -32,6 +34,8 @@ export const SOUND_LABELS: Record<SoundId, string> = {
   streamStart: "Transmissão de tela começou",
   streamStop: "Transmissão de tela terminou",
   mention: "Menção a você",
+  pttOn: "Apertar para falar: microfone abriu",
+  pttOff: "Apertar para falar: microfone fechou",
 };
 
 interface Note {
@@ -61,6 +65,9 @@ export const SOUND_NOTES: Record<SoundId, readonly Note[]> = {
   streamStart: [n(392, 0, 0.08, "triangle"), n(587.33, 0.07, 0.08, "triangle"), n(783.99, 0.14, 0.22, "triangle")],
   streamStop: [n(783.99, 0, 0.08, "triangle"), n(587.33, 0.07, 0.08, "triangle"), n(392, 0.14, 0.22, "triangle")],
   // sino: fundamental + 2º harmônico baixinho
+  // clique curto e baixinho (toca a cada fala): sobe ao abrir, desce ao fechar
+  pttOn: [n(1046.5, 0, 0.05, "sine", 0.45)],
+  pttOff: [n(783.99, 0, 0.05, "sine", 0.35)],
   mention: [n(880, 0, 0.12), n(1760, 0, 0.12, "sine", 0.2), n(1318.51, 0.1, 0.32), n(2637.02, 0.1, 0.32, "sine", 0.15)],
 };
 

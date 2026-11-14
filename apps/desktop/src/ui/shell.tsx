@@ -182,6 +182,8 @@ interface SidebarProps {
   canStream: boolean;
   /** Um moderador me silenciou (o microfone fica bloqueado até tirarem). */
   serverMuted: boolean;
+  /** Apertar para falar ligado: nome da tecla e se o microfone está aberto agora. */
+  pushToTalk?: { label: string; open: boolean } | null;
   /** Posso entrar nesta sala de voz? */
   canConnect: (channelId: Id) => boolean;
   /** O que posso fazer com quem está na voz (silenciar; mover e desconectar). */
@@ -713,6 +715,7 @@ function VoicePanel({
   canSpeak,
   canStream,
   serverMuted,
+  pushToTalk,
 }: SidebarProps) {
   if (voiceError) {
     return (
@@ -782,6 +785,11 @@ function VoicePanel({
         </button>
       </div>
       </div>
+      {pushToTalk && !myVoice.muted && (
+        <p className={pushToTalk.open ? "voice-panel__ptt voice-panel__ptt--open" : "voice-panel__ptt"}>
+          {pushToTalk.open ? "Microfone aberto" : `Aperte ${pushToTalk.label} para falar`}
+        </p>
+      )}
       {shareNotice && myVoice.streaming && (
         <p className="voice-panel__notice" role="status">
           {shareNotice}
