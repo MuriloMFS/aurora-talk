@@ -739,6 +739,10 @@ function VoicePanel({
           {myVoice.streaming && " · transmitindo sua tela"}
         </span>
       </div>
+      <button type="button" className="icon-button icon-button--hangup" aria-label="Sair da voz" title="Sair da voz" onClick={onLeaveVoice}>
+        <PhoneOff {...ICON} />
+      </button>
+      </div>
       <div className="voice-panel__actions">
         <button
           type="button"
@@ -780,10 +784,6 @@ function VoicePanel({
         >
           {myVoice.streaming ? <ScreenShareOff {...ICON} /> : <ScreenShare {...ICON} />}
         </button>
-        <button type="button" className="icon-button icon-button--hangup" aria-label="Sair da voz" title="Sair da voz" onClick={onLeaveVoice}>
-          <PhoneOff {...ICON} />
-        </button>
-      </div>
       </div>
       {pushToTalk && !myVoice.muted && (
         <p className={pushToTalk.open ? "voice-panel__ptt voice-panel__ptt--open" : "voice-panel__ptt"}>

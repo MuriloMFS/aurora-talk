@@ -51,3 +51,17 @@ O instalador para quem ainda não tem o app fica em `apps/desktop/src-tauri/targ
 ## Verificado em 2026-11-12
 - Testes automáticos das rotas: versão nova oferecida com URL e assinatura, `204` para quem está em dia, bloqueio de *path traversal* no download.
 - **Teste real na máquina do dono:** Aurora 1.0.1 instalado → publicada 1.0.2 → ao abrir, o app encontrou a versão, baixou, conferiu a assinatura, instalou e **reabriu já na 1.0.2 em ~4 s**, sem nenhum clique (registro do Windows também atualizado).
+
+## Linux (desde a 1.15.1)
+- O `pnpm release` também gera o Linux.
+  - O `scripts/build-linux.ps1` envia o código e a interface já gerada no Windows (com o servidor embutido) para a máquina Linux.
+  - Lá, compila só a parte nativa, com `nice`, e traz `.AppImage` e `.deb`.
+  - A **assinatura é feita no PC**: a chave nunca sai dele.
+- **Onde compilar:** na base mais antiga suportada, que hoje é a máquina do servidor (Mint 22 = Ubuntu 24.04). Um app compilado num Linux mais novo (ex.: Kali) exige glibc mais nova e não abre no Ubuntu. O Kali fica para testar.
+- O `latest.json` ganha `linux-x86_64-appimage`, `linux-x86_64-deb` e `linux-x86_64`. O app manda `?bundle=` na consulta, e cada tipo de instalação recebe o seu pacote.
+- **Opções do release:**
+  - `-SkipLinux`: só Windows. Quem usa Linux não recebe a versão.
+  - `-LinuxServer`: outra máquina de build.
+  - `-Local`: app de teste apontando para `localhost`. O padrão agora é o servidor oficial.
+- **Testado na 1.15.1:** um app 1.15.0 no Kali atualizou sozinho para a 1.15.1. O arquivo ficou idêntico ao publicado (mesmo SHA-256), e o app reabriu no modo do servidor oficial.
+

@@ -150,6 +150,49 @@ export interface Reaction {
   userIds: Id[];
 }
 
+/** Resposta de uma enquete, com quem votou nela (a contagem e o "eu votei" saem daqui). */
+export interface PollAnswer {
+  /** 1, 2, 3… na ordem em que foi criada. */
+  id: number;
+  text: string;
+  emoji: string | null;
+  voterIds: Id[];
+}
+
+export interface Poll {
+  question: string;
+  answers: PollAnswer[];
+  allowMultiselect: boolean;
+  expiresAt: number;
+  /** Quando acabou (pelo prazo ou encerrada antes); null = aberta. */
+  endedAt: number | null;
+}
+
+/** O que vai junto da mensagem para criar uma enquete. */
+export interface PollCreate {
+  question: string;
+  answers: { text: string; emoji?: string | null }[];
+  durationHours: number;
+  allowMultiselect: boolean;
+}
+
+export interface PollVoteEvent {
+  channelId: Id;
+  messageId: Id;
+  answerId: number;
+  userId: Id;
+}
+
+/** O que dá para exigir que a mensagem tenha, na busca. */
+export type SearchHas = "file" | "image" | "link";
+export const SEARCH_HAS: readonly SearchHas[] = ["file", "image", "link"];
+
+/** Resultado da busca de mensagens: do mais novo para o mais antigo. `total` para em LIMITS.searchCountMax. */
+export interface MessageSearchResult {
+  total: number;
+  messages: Message[];
+}
+
 export interface Message {
   id: Id;
   channelId: Id;
@@ -166,6 +209,8 @@ export interface Message {
   attachments?: Attachment[];
   /** Eco do nonce enviado pelo cliente (de-duplicação do envio). */
   nonce?: string;
+  /** 1.17: enquete (só nas mensagens que têm uma). */
+  poll?: Poll;
 }
 
 /** Arquivo anexado a uma mensagem. */
@@ -288,6 +333,17 @@ export const LIMITS = {
   channelNameMax: 100,
   messageMax: 2000,
   pageSize: 50,
+  /** Busca de mensagens: resultados por página, tamanho do texto buscado e teto da contagem. */
+  searchPageSize: 25,
+  searchQueryMax: 200,
+  searchCountMax: 1000,
+  /** Enquetes (1.17). */
+  pollQuestionMax: 300,
+  pollAnswerMax: 55,
+  pollAnswersMin: 2,
+  pollAnswersMax: 10,
+  /** Durações que dá para escolher, em horas: 1 h, 4 h, 8 h, 24 h, 3 dias, 1 semana. */
+  pollDurationsHours: [1, 4, 8, 24, 72, 168] as readonly number[],
   /** Tamanho do trecho da mensagem respondida. */
   replyExcerptMax: 200,
   /** Emojis diferentes por mensagem. */
@@ -386,6 +442,8 @@ export type DispatchEvent =
   /** `channelId: null` = saiu da voz. */
   | { t: "VOICE_STATE_UPDATE"; d: { guildId: Id; userId: Id; channelId: Id | null; muted: boolean; deafened: boolean; streaming: boolean; serverMuted?: boolean } }
   | { t: "MESSAGE_REACTION_ADD"; d: ReactionEvent }
+  | { t: "MESSAGE_POLL_VOTE_ADD"; d: PollVoteEvent }
+  | { t: "MESSAGE_POLL_VOTE_REMOVE"; d: PollVoteEvent }
   | { t: "MESSAGE_REACTION_REMOVE"; d: ReactionEvent }
   /** Só para o próprio usuário: leu um canal em outro aparelho/aba. */
   | { t: "READ_STATE_UPDATE"; d: { channelId: Id; lastReadId: Id } }
@@ -441,6 +499,8 @@ export const V2_EVENTS: ReadonlySet<DispatchEvent["t"]> = new Set([
   "DM_CHANNEL_UPDATE",
   "DM_CHANNEL_DELETE",
   "USER_SETTINGS_UPDATE",
+  "MESSAGE_POLL_VOTE_ADD",
+  "MESSAGE_POLL_VOTE_REMOVE",
 ]);
 
 export type ServerFrame =

@@ -476,6 +476,7 @@
 }
 .voice-panel__status {
   display: inline-flex;
+  white-space: nowrap;
   align-items: center;
   gap: var(--space-2);
   color: var(--text-primary);
@@ -503,9 +504,18 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/* microfone, fone e tela numa fileira própria: o estado da voz não fica espremido */
 .voice-panel__actions {
-  display: flex;
-  flex: none;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+.voice-panel__actions .icon-button {
+  width: 100%;
+  background: var(--bg-hover);
+}
+.voice-panel__actions .icon-button[aria-pressed="true"] {
+  background: var(--bg-elevated);
 }
 .icon-button--alert[aria-pressed="true"] {
   background: transparent;

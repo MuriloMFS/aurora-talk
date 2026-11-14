@@ -2,6 +2,10 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
+  type Poll,
+  type PollCreate,
+  type MessageSearchResult,
+  type SearchHas,
   DEFAULT_EVERYONE_PERMISSIONS,
   EVERYONE_ROLE_NAME,
   LIMITS,
@@ -314,6 +318,43 @@ export class Store {
     if (version < 1) {
       this.run("UPDATE roles SET permissions = permissions | ? WHERE id = guild_id", PERMISSIONS.VIEW_CHANNEL);
       this.db.exec("PRAGMA user_version = 1");
+    }
+    // 1.15: busca de mensagens (texto completo, sem acento: "acao" acha "Ação"). O índice só guarda
+    // o texto; quem pode ver o quê é decidido na consulta. Gatilhos mantêm o índice ao inserir, editar e apagar.
+    this.db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(content, content='messages', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
+      CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
+        INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+      END;
+      CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
+        INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+      END;
+      CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE OF content ON messages BEGIN
+        INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+        INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+      END;`);
+    if (version < 2) {
+      this.db.exec("INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')"); // histórico de antes da 1.15
+      this.db.exec("PRAGMA user_version = 2");
+    }
+    // 1.17: enquetes. Apagar a mensagem apaga a enquete, as respostas e os votos (cascata).
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS polls (
+        message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+        question TEXT NOT NULL, allow_multi INTEGER NOT NULL, expires_at INTEGER NOT NULL, ended_at INTEGER);
+      CREATE TABLE IF NOT EXISTS poll_answers (
+        message_id INTEGER NOT NULL REFERENCES polls(message_id) ON DELETE CASCADE,
+        answer_id INTEGER NOT NULL, text TEXT NOT NULL, emoji TEXT,
+        PRIMARY KEY (message_id, answer_id));
+      CREATE TABLE IF NOT EXISTS poll_votes (
+        message_id INTEGER NOT NULL, answer_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at INTEGER NOT NULL,
+        PRIMARY KEY (message_id, answer_id, user_id),
+        FOREIGN KEY (message_id, answer_id) REFERENCES poll_answers(message_id, answer_id) ON DELETE CASCADE);`);
+    // "Criar enquetes" nasce no @todos de todo servidor que já existia (uma vez só)
+    if (version < 3) {
+      this.run("UPDATE roles SET permissions = permissions | ? WHERE id = guild_id", PERMISSIONS.SEND_POLLS);
+      this.db.exec("PRAGMA user_version = 3");
     }
   }
 
@@ -1050,7 +1091,7 @@ export class Store {
 
   private dmPermissionsOf(dm: NonNullable<ServerChannel["dm"]>, userId: Id): number {
     if (!dm.recipientIds.includes(userId)) return 0;
-    const all = PERMISSIONS.VIEW_CHANNEL | PERMISSIONS.SEND_MESSAGES | PERMISSIONS.ADD_REACTIONS;
+    const all = PERMISSIONS.VIEW_CHANNEL | PERMISSIONS.SEND_MESSAGES | PERMISSIONS.ADD_REACTIONS | PERMISSIONS.SEND_POLLS;
     if (dm.type === "dm") {
       const other = dm.recipientIds.find((id) => id !== userId);
       if (other && this.isBlockedEither(userId, other)) return PERMISSIONS.VIEW_CHANNEL; // lê o histórico, não escreve
@@ -1273,7 +1314,36 @@ export class Store {
         { id: String(r.id), filename, size: r.size, contentType: r.content_type, width: r.width, height: r.height, url: signAttachment(this.attachmentSecret, String(r.id), filename, now) },
       ]);
     }
+    // enquetes: respostas e quem votou em cada uma (passou do prazo = encerrada)
+    const polls = new Map<number, Poll>();
+    for (const p of this.all<{ message_id: number; question: string; allow_multi: number; expires_at: number; ended_at: number | null }>(
+      `SELECT message_id, question, allow_multi, expires_at, ended_at FROM polls WHERE message_id IN (${marks})`,
+      ...ids,
+    )) {
+      polls.set(p.message_id, {
+        question: p.question,
+        answers: [],
+        allowMultiselect: p.allow_multi === 1,
+        expiresAt: p.expires_at,
+        endedAt: p.ended_at ?? (p.expires_at <= now ? p.expires_at : null),
+      });
+    }
+    if (polls.size > 0) {
+      for (const a of this.all<{ message_id: number; answer_id: number; text: string; emoji: string | null }>(
+        `SELECT message_id, answer_id, text, emoji FROM poll_answers WHERE message_id IN (${marks}) ORDER BY answer_id`,
+        ...ids,
+      )) {
+        polls.get(a.message_id)?.answers.push({ id: a.answer_id, text: a.text, emoji: a.emoji, voterIds: [] });
+      }
+      for (const v of this.all<{ message_id: number; answer_id: number; user_id: number }>(
+        `SELECT message_id, answer_id, user_id FROM poll_votes WHERE message_id IN (${marks}) ORDER BY created_at, user_id`,
+        ...ids,
+      )) {
+        polls.get(v.message_id)?.answers.find((a) => a.id === v.answer_id)?.voterIds.push(String(v.user_id));
+      }
+    }
     return rows.map((r) => ({
+      ...(polls.has(r.id) ? { poll: polls.get(r.id)! } : {}),
       id: String(r.id),
       channelId: String(r.channel_id),
       author: { id: String(r.author_id), username: r.username, displayName: r.display_name, avatar: avatarOf(r.avatar_id) },
@@ -1296,7 +1366,7 @@ export class Store {
    * `mentionIds` já validados (membros do servidor), incluindo o autor da mensagem respondida.
    * `attachmentIds`: anexos pendentes já conferidos (`pendingAttachments`).
    */
-  createMessage(channelId: Id, author: User, content: string, replyToId: Id | null = null, mentionIds: Id[] = [], attachmentIds: Id[] = []): Message {
+  createMessage(channelId: Id, author: User, content: string, replyToId: Id | null = null, mentionIds: Id[] = [], attachmentIds: Id[] = [], poll: PollCreate | null = null): Message {
     const id = nextId();
     this.transaction(() => {
       this.run(
@@ -1308,6 +1378,13 @@ export class Store {
       attachmentIds.forEach((fileId, position) =>
         this.run("UPDATE files SET message_id = ?, position = ? WHERE id = ? AND message_id IS NULL", Number(id), position, Number(fileId)),
       );
+      if (poll) {
+        const expiresAt = Date.now() + poll.durationHours * 3_600_000;
+        this.run("INSERT INTO polls (message_id, question, allow_multi, expires_at) VALUES (?, ?, ?, ?)", Number(id), poll.question, poll.allowMultiselect ? 1 : 0, expiresAt);
+        poll.answers.forEach((answer, index) =>
+          this.run("INSERT INTO poll_answers (message_id, answer_id, text, emoji) VALUES (?, ?, ?, ?)", Number(id), index + 1, answer.text, answer.emoji ?? null),
+        );
+      }
     });
     return this.getMessage(id)!;
   }
@@ -1323,6 +1400,119 @@ export class Store {
       ? this.all<MessageRow>(`${MESSAGE_SELECT} WHERE m.channel_id = ? AND m.id < ? ORDER BY m.id DESC LIMIT ?`, Number(channelId), Number(before), limit)
       : this.all<MessageRow>(`${MESSAGE_SELECT} WHERE m.channel_id = ? ORDER BY m.id DESC LIMIT ?`, Number(channelId), limit);
     return this.hydrate(rows).reverse();
+  }
+
+  /** Página em ordem cronológica: as `limit` mensagens depois de `after`. */
+  listMessagesAfter(channelId: Id, after: Id, limit: number): Message[] {
+    return this.hydrate(this.all<MessageRow>(`${MESSAGE_SELECT} WHERE m.channel_id = ? AND m.id > ? ORDER BY m.id ASC LIMIT ?`, Number(channelId), Number(after), limit));
+  }
+
+  /** Janela em volta de uma mensagem (ela inclusa), em ordem cronológica. */
+  listMessagesAround(channelId: Id, around: Id, limit: number): Message[] {
+    const half = Math.floor(limit / 2);
+    const older = this.all<MessageRow>(`${MESSAGE_SELECT} WHERE m.channel_id = ? AND m.id <= ? ORDER BY m.id DESC LIMIT ?`, Number(channelId), Number(around), limit - half);
+    const newer = this.all<MessageRow>(`${MESSAGE_SELECT} WHERE m.channel_id = ? AND m.id > ? ORDER BY m.id ASC LIMIT ?`, Number(channelId), Number(around), half);
+    return [...this.hydrate(older).reverse(), ...this.hydrate(newer)];
+  }
+
+  /**
+   * Busca de mensagens SÓ nos canais de `channelIds` (quem chama já decidiu o que a pessoa pode ver).
+   * `terms`: palavras já separadas (cada uma vira prefixo: "jog" acha "jogo"). Do mais novo para o mais antigo.
+   */
+  searchMessages(query: {
+    channelIds: readonly Id[];
+    terms: readonly string[];
+    authorId?: Id;
+    has?: readonly SearchHas[];
+    before?: number;
+    after?: number;
+    offset: number;
+    limit: number;
+  }): MessageSearchResult {
+    if (query.channelIds.length === 0) return { total: 0, messages: [] };
+    const where: string[] = [`m.channel_id IN (${query.channelIds.map(() => "?").join(",")})`];
+    const params: (string | number)[] = query.channelIds.map(Number);
+    let from = "messages m";
+    if (query.terms.length > 0) {
+      from = "messages_fts f JOIN messages m ON m.id = f.rowid";
+      where.push("messages_fts MATCH ?");
+      // cada palavra entre aspas (nada do que a pessoa digita vira operador do FTS) e como prefixo
+      params.push(query.terms.map((t) => `"${t.replaceAll('"', '""')}"*`).join(" "));
+    }
+    if (query.authorId) {
+      where.push("m.author_id = ?");
+      params.push(Number(query.authorId));
+    }
+    for (const kind of query.has ?? []) {
+      if (kind === "link") where.push("(m.content LIKE '%http://%' OR m.content LIKE '%https://%')");
+      else if (kind === "file") where.push("EXISTS (SELECT 1 FROM files a WHERE a.message_id = m.id)");
+      else if (kind === "image") where.push("EXISTS (SELECT 1 FROM files a WHERE a.message_id = m.id AND a.content_type LIKE 'image/%')");
+    }
+    if (query.before !== undefined) {
+      where.push("m.created_at < ?");
+      params.push(query.before);
+    }
+    if (query.after !== undefined) {
+      where.push("m.created_at >= ?");
+      params.push(query.after);
+    }
+    const filter = where.join(" AND ");
+    const total =
+      this.one<{ n: number }>(`SELECT COUNT(*) AS n FROM (SELECT 1 FROM ${from} WHERE ${filter} LIMIT ?)`, ...params, LIMITS.searchCountMax)?.n ?? 0;
+    const ids = this.all<{ id: number }>(`SELECT m.id FROM ${from} WHERE ${filter} ORDER BY m.id DESC LIMIT ? OFFSET ?`, ...params, query.limit, query.offset).map((r) => r.id);
+    if (ids.length === 0) return { total, messages: [] };
+    const rows = this.all<MessageRow>(`${MESSAGE_SELECT} WHERE m.id IN (${ids.map(() => "?").join(",")}) ORDER BY m.id DESC`, ...ids);
+    return { total, messages: this.hydrate(rows) };
+  }
+
+  /* ---------- enquetes ---------- */
+
+  /** Estado de votação de uma enquete (undefined = a mensagem não tem enquete). */
+  pollState(messageId: Id, now = Date.now()): { open: boolean; allowMultiselect: boolean; answerIds: number[] } | undefined {
+    const p = this.one<{ allow_multi: number; expires_at: number; ended_at: number | null }>("SELECT allow_multi, expires_at, ended_at FROM polls WHERE message_id = ?", Number(messageId));
+    if (!p) return undefined;
+    const answerIds = this.all<{ answer_id: number }>("SELECT answer_id FROM poll_answers WHERE message_id = ? ORDER BY answer_id", Number(messageId)).map((a) => a.answer_id);
+    return { open: p.ended_at === null && p.expires_at > now, allowMultiselect: p.allow_multi === 1, answerIds };
+  }
+
+  /**
+   * Vota numa resposta. Em enquete de uma resposta só, o voto anterior sai (devolvido em `removed`).
+   * `added` = false se a pessoa já tinha esse voto.
+   */
+  votePoll(messageId: Id, answerId: number, userId: Id, single: boolean): { added: boolean; removed: number[] } {
+    let added = false;
+    let removed: number[] = [];
+    this.transaction(() => {
+      if (single) {
+        removed = this.all<{ answer_id: number }>(
+          "SELECT answer_id FROM poll_votes WHERE message_id = ? AND user_id = ? AND answer_id != ?",
+          Number(messageId), Number(userId), answerId,
+        ).map((r) => r.answer_id);
+        this.run("DELETE FROM poll_votes WHERE message_id = ? AND user_id = ? AND answer_id != ?", Number(messageId), Number(userId), answerId);
+      }
+      const had = this.one("SELECT 1 FROM poll_votes WHERE message_id = ? AND answer_id = ? AND user_id = ?", Number(messageId), answerId, Number(userId));
+      if (!had) {
+        this.run("INSERT INTO poll_votes (message_id, answer_id, user_id, created_at) VALUES (?, ?, ?, ?)", Number(messageId), answerId, Number(userId), Date.now());
+        added = true;
+      }
+    });
+    return { added, removed };
+  }
+
+  /** Tira o voto; false se não havia. */
+  unvotePoll(messageId: Id, answerId: number, userId: Id): boolean {
+    const had = this.one("SELECT 1 FROM poll_votes WHERE message_id = ? AND answer_id = ? AND user_id = ?", Number(messageId), answerId, Number(userId));
+    if (!had) return false;
+    this.run("DELETE FROM poll_votes WHERE message_id = ? AND answer_id = ? AND user_id = ?", Number(messageId), answerId, Number(userId));
+    return true;
+  }
+
+  /** Encerra antes do prazo; false se já tinha acabado. */
+  endPoll(messageId: Id, now = Date.now()): boolean {
+    const state = this.pollState(messageId, now);
+    if (!state?.open) return false;
+    this.run("UPDATE polls SET ended_at = ? WHERE message_id = ?", now, Number(messageId));
+    return true;
   }
 
   updateMessage(messageId: Id, content: string, mentionIds: Id[] = []): Message | undefined {

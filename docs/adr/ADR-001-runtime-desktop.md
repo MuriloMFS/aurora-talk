@@ -12,7 +12,7 @@ O produto passa a ser **desktop-first**: o primeiro entregável é um **instalad
 1. Voz/vídeo/**compartilhar tela com áudio**, PTT **global** (inclusive botões do mouse), supressão de ruído — com LiveKit (SFU).
 2. UI rica: lista virtualizada de 50 mil+ mensagens, Markdown, emoji, embeds, grade de mídia, i18n, **acessibilidade** (leitor de tela).
 3. SO: bandeja (mutar/ensurdecer), badge, notificações, autostart, instância única, *deep link*, **atualização automática assinada**.
-4. Windows primeiro; mac/Linux e mobile depois.
+4. Windows primeiro; mac/Linux e mobile depois. **Linux:** decidido em 2026-11-14 no [ADR-003](ADR-003-linux-nativo.md) (app nativo com motor de mídia nativo).
 5. Time e ferramentas atuais em **TypeScript**; o guia visual já define tokens em CSS.
 
 ## 2. Fatos (verificados) e premissas (não verificadas)

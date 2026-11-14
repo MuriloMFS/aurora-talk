@@ -44,10 +44,15 @@ ul {
 .app[data-members="closed"] {
   grid-template-columns: var(--rail-width) var(--sidebar-width) minmax(0, 1fr);
 }
+/* resultados da busca no lugar dos membros (coluna mais larga) */
+.app[data-members="search"] {
+  grid-template-columns: var(--rail-width) var(--sidebar-width) minmax(var(--chat-min-width), 1fr) var(--search-panel-width);
+}
 
 /* 900–1199: membros viram painel sobreposto (alternável) */
 @media (max-width: 1199px) {
   .app,
+  .app[data-members="search"],
   .app[data-members="closed"] {
     grid-template-columns: var(--rail-width) var(--sidebar-width) minmax(0, 1fr);
   }
@@ -65,6 +70,7 @@ ul {
 /* < 900: rail + canais num drawer; chat em tela cheia */
 @media (max-width: 899px) {
   .app,
+  .app[data-members="search"],
   .app[data-members="closed"] {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -565,7 +571,8 @@ ul {
   flex: 1;
   min-width: 0;
   max-height: 40vh;
-  padding: var(--space-1) 0;
+  /* uma linha fica da altura dos botões (+, enviar): o texto cai no meio deles em qualquer escala */
+  padding: calc((var(--control-height-compact) - var(--leading-base)) / 2) 0;
   border: 0;
   background: transparent;
   color: var(--text-primary);

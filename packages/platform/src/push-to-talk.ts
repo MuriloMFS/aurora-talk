@@ -211,3 +211,29 @@ export class PushToTalkGate {
 
 const clampRelease = (ms: number) =>
   Number.isFinite(ms) ? Math.min(PTT_RELEASE_MAX, Math.max(PTT_RELEASE_MIN, Math.round(ms))) : PTT_RELEASE_DEFAULT;
+
+/**
+ * Apertar para falar só com a janela do app em foco (navegador, e o app Linux até a L2 do doc 13):
+ * escuta teclas e botões do mouse da própria página; perder o foco conta como soltar.
+ */
+export function watchFocusedPushToTalk(code: string, onChange: (pressed: boolean) => void): () => void {
+  let pressed = false;
+  const set = (next: boolean) => {
+    if (next === pressed) return;
+    pressed = next;
+    onChange(next);
+  };
+  const onInput = (event: Event) => {
+    if (pttCodeFromEvent(event as KeyboardEvent | MouseEvent) !== code) return;
+    set(event.type === "keydown" || event.type === "mousedown");
+  };
+  const onBlur = () => set(false);
+  const types = ["keydown", "keyup", "mousedown", "mouseup"] as const;
+  for (const type of types) globalThis.addEventListener?.(type, onInput, { capture: true });
+  globalThis.addEventListener?.("blur", onBlur);
+  return () => {
+    for (const type of types) globalThis.removeEventListener?.(type, onInput, { capture: true });
+    globalThis.removeEventListener?.("blur", onBlur);
+    set(false);
+  };
+}

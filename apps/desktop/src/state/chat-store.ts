@@ -1,3 +1,4 @@
+import { withPollVote } from "../poll";
 import { useSyncExternalStore } from "react";
 import {
   applyTimeout,
@@ -42,6 +43,11 @@ export interface ChannelMessages {
   items: Message[];
   hasMore: boolean;
   loaded: boolean;
+  /**
+   * Janela antiga (pulou para um resultado da busca ou uma resposta antiga): as mensagens mais novas
+   * não estão carregadas. Mensagem nova que chega não entra (ficaria depois de um buraco).
+   */
+  hasNewer?: boolean;
 }
 
 /** Leitura de um canal (vem do servidor no READY e é mantida ao vivo). */
@@ -81,7 +87,9 @@ export type ChatAction =
   | { type: "guildUpsert"; guild: Guild }
   | { type: "channelUpsert"; channel: Channel }
   | { type: "messageUpsert"; message: Message }
-  | { type: "history"; channelId: Id; messages: Message[]; mode: "latest" | "older"; pageSize: number }
+  | { type: "history"; channelId: Id; messages: Message[]; mode: "latest" | "older" | "newer"; pageSize: number }
+  /** Janela em volta de uma mensagem (`GET …/messages?around=`): troca o que estava carregado. */
+  | { type: "historyAround"; channelId: Id; messages: Message[]; hasMore: boolean; hasNewer: boolean }
   | { type: "focusChannel"; channelId: Id | null }
   | { type: "windowFocus"; focused: boolean }
   | { type: "typingExpire"; now: number }
@@ -274,7 +282,7 @@ function withChannel(state: ChatState, channel: Channel): ChatState {
 function withMessage(state: ChatState, message: Message): ChatState {
   const bucket = state.messages[message.channelId];
   const known = bucket?.items.some((m) => m.id === message.id) ?? false;
-  const messages = bucket?.loaded
+  const messages = bucket?.loaded && !bucket.hasNewer
     ? { ...state.messages, [message.channelId]: { ...bucket, items: mergeMessages(bucket.items, [message]) } }
     : state.messages;
 
@@ -353,6 +361,11 @@ function applyDispatch(state: ChatState, event: DispatchEvent, now: number): Cha
       const bucket = state.messages[event.d.channelId];
       if (!bucket) return state;
       return { ...state, messages: { ...state.messages, [event.d.channelId]: { ...bucket, items: bucket.items.filter((m) => m.id !== event.d.id) } } };
+    }
+    case "MESSAGE_POLL_VOTE_ADD":
+    case "MESSAGE_POLL_VOTE_REMOVE": {
+      const { channelId, messageId, answerId, userId } = event.d;
+      return updateMessage(state, channelId, messageId, (m) => withPollVote(m, answerId, userId, event.t === "MESSAGE_POLL_VOTE_ADD"));
     }
     case "MESSAGE_REACTION_ADD":
     case "MESSAGE_REACTION_REMOVE": {
@@ -478,10 +491,23 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return withMessage(state, action.message);
     case "history": {
       const bucket = state.messages[action.channelId];
-      const items = mergeMessages(action.mode === "older" ? (bucket?.items ?? []) : (bucket?.loaded ? bucket.items : []), action.messages);
-      const hasMore = action.messages.length >= action.pageSize;
-      return { ...state, messages: { ...state.messages, [action.channelId]: { items, loaded: true, hasMore } } };
+      const full = action.messages.length >= action.pageSize;
+      if (action.mode === "newer") {
+        if (!bucket?.loaded) return state;
+        const items = mergeMessages(bucket.items, action.messages);
+        return { ...state, messages: { ...state.messages, [action.channelId]: { ...bucket, items, hasNewer: full } } };
+      }
+      // "latest" sobre uma janela antiga: troca tudo (juntar deixaria um buraco no meio)
+      const keep = action.mode === "older" ? (bucket?.items ?? []) : bucket?.loaded && !bucket.hasNewer ? bucket.items : [];
+      const items = mergeMessages(keep, action.messages);
+      const hasNewer = action.mode === "older" ? bucket?.hasNewer : false;
+      return { ...state, messages: { ...state.messages, [action.channelId]: { items, loaded: true, hasMore: full, ...(hasNewer ? { hasNewer } : {}) } } };
     }
+    case "historyAround":
+      return {
+        ...state,
+        messages: { ...state.messages, [action.channelId]: { items: mergeMessages([], action.messages), loaded: true, hasMore: action.hasMore, ...(action.hasNewer ? { hasNewer: true } : {}) } },
+      };
     case "focusChannel": {
       const next = action.channelId === state.activeChannelId ? state : { ...state, activeChannelId: action.channelId };
       return next.focused ? markRead(next, action.channelId) : next;

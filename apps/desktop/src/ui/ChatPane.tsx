@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode, type RefObject } from "react";
-import { ArrowDown, AtSign, Volume2, CornerUpRight, EyeOff, FaceSlightlySmilingPlus, Hash, Menu, Pencil, Plus, Reply, SendHorizontal, Trash, Upload, Users, WifiOff, X } from "lucide-react";
-import { LIMITS, type Channel, type Id, type Member, type Message, type User } from "@aurora/schema";
+import { ArrowDown, ListChecks, AtSign, Volume2, CornerUpRight, EyeOff, FaceSlightlySmilingPlus, Hash, Menu, Pencil, Plus, Reply, SendHorizontal, Trash, Upload, Users, WifiOff, X } from "lucide-react";
+import { LIMITS, type Channel, type Id, type Member, type Message, type PollCreate, type User } from "@aurora/schema";
 import { ApiError } from "../net/api";
 import type { ConnectionStatus } from "../net/gateway";
 import type { ChannelMessages } from "../state/chat-store";
@@ -12,7 +12,8 @@ import { MessageContent } from "./MessageContent";
 import { Avatar, ICON, ICON_SM } from "./shell";
 import { MessageAttachments, UploadQueue, useUploads, type UploadFn } from "./Attachments";
 import { MENTION_EVENT } from "./UserMenu";
-import { MemberSearch } from "./MemberSearch";
+import { TopSearch } from "./TopSearch";
+import { CreatePollDialog, PollCard } from "./Polls";
 import { anchorOf } from "./anchor";
 
 const errorText = (error: unknown) => (error instanceof ApiError ? error.message : "Algo deu errado. Tente de novo.");
@@ -60,8 +61,25 @@ interface ChatPaneProps {
   isBlocked?: (userId: Id) => boolean;
   /** Clique no nome ou na foto de quem escreveu: menu da pessoa. */
   onOpenUser?: (user: User, at: { x: number; y: number }) => void;
-  /** Texto da busca de pessoas no topo (ex.: "Buscar em Turma"); sem isto, sem busca. */
-  searchPlaceholder?: string;
+  /** Pode criar enquete neste canal (menu "+"). */
+  canCreatePoll?: boolean;
+  onSendPoll?: (poll: PollCreate) => Promise<void>;
+  onVotePoll?: (message: Message, answerId: number, add: boolean) => Promise<void>;
+  onEndPoll?: (message: Message) => Promise<void>;
+  /** Onde a busca do topo procura ("Turma do sábado", "o grupo"); sem isto, sem busca. */
+  searchPlace?: string;
+  /** Busca de pessoas (servidor e grupo); sem isto, só mensagens. */
+  canSearchPeople?: boolean;
+  onSearch?: (text: string) => void;
+  /** O que está aberto no painel de resultados (null = fechado). */
+  activeSearch?: string | null;
+  /** Ir até esta mensagem (resultado da busca); `"latest"` = descer até o fim. `nonce` muda a cada pedido. */
+  jumpTarget?: { id: Id | "latest"; nonce: number } | null;
+  /** A mensagem não está carregada (resposta antiga): carrega a janela em volta dela. */
+  onJumpToMessage?: (messageId: Id) => void;
+  /** Janela antiga: carregar as mais novas / voltar ao presente. */
+  onLoadNewer?: () => Promise<void>;
+  onJumpToPresent?: () => void;
 }
 
 /** O que as mensagens precisam saber sobre pessoas e ações (evita repassar 10 props). */
@@ -79,6 +97,8 @@ interface MessageContext {
   onReply: (message: Message) => void;
   onJumpTo: (messageId: Id) => void;
   onOpenLink: (url: string) => void;
+  onVotePoll?: (message: Message, answerId: number, add: boolean) => Promise<void>;
+  onEndPoll?: (message: Message) => Promise<void>;
   isBlocked: (userId: Id) => boolean;
   onOpenUser?: (user: User, at: { x: number; y: number }) => void;
 }
@@ -94,6 +114,7 @@ export function ChatPane(props: ChatPaneProps) {
   const [olderError, setOlderError] = useState<string | null>(null);
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [flashId, setFlashId] = useState<Id | null>(null);
+  const [pollOpen, setPollOpen] = useState(false);
   // arrastar arquivos para o chat: o compositor recebe
   const addFilesRef = useRef<((files: File[]) => void) | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -108,6 +129,44 @@ export function ChatPane(props: ChatPaneProps) {
   const users = useMemo(() => members.map((m) => m.user), [members]);
   const usersById = useMemo(() => Object.fromEntries(users.map((u) => [u.id, u])), [users]);
   const nameOf = useCallback((userId: Id) => membersById[userId]?.user.displayName ?? null, [membersById]);
+
+  /** Centraliza e destaca a mensagem; false se ela não está carregada. */
+  const focusMessage = (messageId: Id): boolean => {
+    const element = document.getElementById(`message-${messageId}`);
+    if (!element) return false;
+    element.scrollIntoView({ block: "center" });
+    atBottomRef.current = false;
+    setFlashId(messageId);
+    window.setTimeout(() => setFlashId((current) => (current === messageId ? null : current)), FLASH_MS);
+    return true;
+  };
+
+  // Pedido de "ir até" (busca): espera a mensagem estar na tela e vai uma vez por pedido.
+  const handledJump = useRef<number | null>(null);
+  const jump = props.jumpTarget;
+  useEffect(() => {
+    if (!jump || handledJump.current === jump.nonce || !bucket?.loaded) return;
+    if (jump.id === "latest") {
+      handledJump.current = jump.nonce;
+      scrollToBottom();
+      return;
+    }
+    if (focusMessage(jump.id)) handledJump.current = jump.nonce;
+  }, [jump?.nonce, jump?.id, bucket?.loaded, items.length]);
+
+  const [loadingNewer, setLoadingNewer] = useState(false);
+  const loadNewer = async () => {
+    if (!props.onLoadNewer) return;
+    setLoadingNewer(true);
+    setOlderError(null);
+    try {
+      await props.onLoadNewer();
+    } catch (error) {
+      setOlderError(errorText(error));
+    } finally {
+      setLoadingNewer(false);
+    }
+  };
 
   const scrollToBottom = () => {
     const list = listRef.current;
@@ -175,19 +234,17 @@ export function ChatPane(props: ChatPaneProps) {
     onDelete: props.onDelete,
     onReact: props.onReact,
     onOpenLink: props.onOpenLink,
+    onVotePoll: props.onVotePoll,
+    onEndPoll: props.onEndPoll,
     isBlocked: props.isBlocked ?? (() => false),
     onOpenUser: props.onOpenUser,
     onReply: (message) => {
       setReplyingTo(message);
       composerRef.current?.focus();
     },
-    // Vai até a mensagem original (se estiver carregada) e a destaca por um instante.
+    // Vai até a mensagem original e a destaca por um instante; se for antiga (não carregada), carrega em volta.
     onJumpTo: (messageId) => {
-      const element = document.getElementById(`message-${messageId}`);
-      if (!element) return;
-      element.scrollIntoView({ block: "center" });
-      setFlashId(messageId);
-      window.setTimeout(() => setFlashId((current) => (current === messageId ? null : current)), FLASH_MS);
+      if (!focusMessage(messageId)) props.onJumpToMessage?.(messageId);
     },
   };
 
@@ -231,7 +288,15 @@ export function ChatPane(props: ChatPaneProps) {
         </h2>
         <div className="chat__tools">
           {props.headerExtra}
-          {props.searchPlaceholder && props.onOpenUser && <MemberSearch members={members} placeholder={props.searchPlaceholder} onPick={props.onOpenUser} />}
+          {props.searchPlace && props.onSearch && (
+            <TopSearch
+              members={members}
+              placeName={props.searchPlace}
+              onPickUser={props.canSearchPeople ? props.onOpenUser : undefined}
+              onSearch={props.onSearch}
+              activeQuery={props.activeSearch ?? null}
+            />
+          )}
           <button
             type="button"
             className="icon-button"
@@ -306,15 +371,32 @@ export function ChatPane(props: ChatPaneProps) {
             {rows.map(({ message, startsGroup }) => (
               <MessageItem key={message.id} message={message} startsGroup={startsGroup} flash={flashId === message.id} ctx={context} />
             ))}
+            {bucket.hasNewer && (
+              <div className="load-older load-newer">
+                <button type="button" className="button button--secondary" onClick={() => void loadNewer()} disabled={loadingNewer}>
+                  {loadingNewer ? "Carregando…" : "Carregar mensagens mais novas"}
+                </button>
+              </div>
+            )}
           </>
         )}
       </div>
 
-      {showJump && (
-        <button type="button" className="jump-latest" onClick={scrollToBottom}>
-          <ArrowDown {...ICON_SM} />
-          Ir para as mensagens novas
-        </button>
+      {bucket?.hasNewer ? (
+        <div className="jump-latest jump-latest--past" role="status">
+          <span>Você está vendo mensagens antigas</span>
+          <button type="button" className="jump-latest__action" onClick={props.onJumpToPresent}>
+            <ArrowDown {...ICON_SM} />
+            Ir para o presente
+          </button>
+        </div>
+      ) : (
+        showJump && (
+          <button type="button" className="jump-latest" onClick={scrollToBottom}>
+            <ArrowDown {...ICON_SM} />
+            Ir para as mensagens novas
+          </button>
+        )
       )}
 
       {props.canSend ? (
@@ -330,6 +412,7 @@ export function ChatPane(props: ChatPaneProps) {
           onUpload={props.onUpload}
           addFilesRef={addFilesRef}
           onTyping={props.onTyping}
+          onCreatePoll={props.canCreatePoll && props.onSendPoll ? () => setPollOpen(true) : undefined}
         />
       ) : (
         <p className="composer-blocked" role="note">
@@ -339,6 +422,7 @@ export function ChatPane(props: ChatPaneProps) {
       <div className="typing" aria-live="polite">
         {typingText(props.typingNames)}
       </div>
+      {pollOpen && props.onSendPoll && <CreatePollDialog onSubmit={props.onSendPoll} onClose={() => setPollOpen(false)} />}
     </main>
   );
 }
@@ -505,6 +589,17 @@ function MessageItem({ message, startsGroup, flash, ctx }: { message: Message; s
           />
         ) : null}
         {message.attachments && message.attachments.length > 0 && <MessageAttachments attachments={message.attachments} onOpenLink={ctx.onOpenLink} />}
+        {message.poll && (
+          <PollCard
+            message={message as Message & { poll: NonNullable<Message["poll"]> }}
+            me={ctx.me}
+            canVote={ctx.canReact && Boolean(ctx.onVotePoll)}
+            canEnd={(message.author.id === ctx.me.id || ctx.canManageMessages) && Boolean(ctx.onEndPoll)}
+            usersById={ctx.usersById}
+            onVote={(answerId, add) => ctx.onVotePoll!(message, answerId, add)}
+            onEnd={() => ctx.onEndPoll!(message)}
+          />
+        )}
         {message.reactions.length > 0 && (
           <div className="reactions" role="group" aria-label="Reações">
             {message.reactions.map((reaction) => {
@@ -609,6 +704,7 @@ function Composer({
   onUpload,
   addFilesRef,
   onTyping,
+  onCreatePoll,
 }: {
   inputRef: RefObject<HTMLTextAreaElement | null>;
   channelName: string;
@@ -622,6 +718,8 @@ function Composer({
   onUpload: UploadFn;
   addFilesRef: RefObject<((files: File[]) => void) | null>;
   onTyping: () => void;
+  /** "Criar enquete" no menu "+" (só para quem pode). */
+  onCreatePoll?: () => void;
 }) {
   const [text, setText] = useState("");
   const uploads = useUploads(onUpload);
@@ -789,9 +887,7 @@ function Composer({
             event.target.value = "";
           }}
         />
-        <button type="button" className="icon-button composer__attach" aria-label="Enviar arquivo ou imagem" title="Enviar arquivo (ou arraste, ou Ctrl+V)" onClick={() => fileInputRef.current?.click()}>
-          <Plus {...ICON} />
-        </button>
+        <ComposerMenu onAttach={() => fileInputRef.current?.click()} onCreatePoll={onCreatePoll} />
         <textarea
           id="composer-input"
           ref={inputRef}
@@ -830,5 +926,71 @@ function Composer({
         </button>
       </div>
     </form>
+  );
+}
+
+/**
+ * Menu do "+" do campo de mensagem: só o que funciona de verdade (docs/14-menu-mais.md).
+ * Arrastar e Ctrl+V continuam enviando arquivos sem abrir o menu.
+ */
+function ComposerMenu({ onAttach, onCreatePoll }: { onAttach: () => void; onCreatePoll?: () => void }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    rootRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+    const onPointer = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointer);
+    return () => document.removeEventListener("pointerdown", onPointer);
+  }, [open]);
+  const choose = (action: () => void) => {
+    setOpen(false);
+    action();
+  };
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const list = [...(rootRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [])];
+    const index = list.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+      triggerRef.current?.focus();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      list[(index + (event.key === "ArrowDown" ? 1 : -1) + list.length) % list.length]?.focus();
+    } else if (event.key === "Tab") setOpen(false);
+  };
+  return (
+    <div className="composer-menu composer__attach" ref={rootRef}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="icon-button"
+        aria-label="Mais opções: enviar arquivo e outras"
+        title="Enviar arquivo e mais (arrastar e Ctrl+V também enviam arquivos)"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <Plus {...ICON} />
+      </button>
+      {open && (
+        <div className="composer-menu__list" role="menu" aria-label="Mais opções" onKeyDown={onKeyDown}>
+          <button type="button" role="menuitem" className="user-menu__item" onClick={() => choose(onAttach)}>
+            <Upload {...ICON_SM} />
+            <span className="user-menu__label">Enviar um arquivo</span>
+          </button>
+          {onCreatePoll && (
+            <button type="button" role="menuitem" className="user-menu__item" onClick={() => choose(onCreatePoll)}>
+              <ListChecks {...ICON_SM} />
+              <span className="user-menu__label">Criar enquete</span>
+            </button>
+          )}
+        </div>
+      )}
+    </div>
   );
 }

@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { isWebUrl, type DesktopSettings, type PlatformPort, type SystemAudioCapture, type UpdateInfo, type UpdateProgress } from "./index";
 import { BADGE_SIZE, drawBadge } from "./badge";
 import { pcmChunkToAudioDataInit } from "./system-audio";
-import { pttVirtualKey } from "./push-to-talk";
+import { pttVirtualKey, watchFocusedPushToTalk } from "./push-to-talk";
 
 /** API do Chromium (não está na lib DOM do TypeScript): trilha de áudio alimentada pela página. */
 type AudioTrackGenerator = MediaStreamTrack & { writable: WritableStream<AudioData> };
@@ -16,7 +16,7 @@ export function createTauriPlatform(): PlatformPort {
     async getInfo() {
       // A captura nativa (loopback por processo) é do Windows; nos demais, o seletor do sistema.
       const windows = /Windows/i.test(globalThis.navigator?.userAgent ?? "");
-      return { kind: "tauri", appVersion: await getVersion(), systemAudio: windows ? "native" : "picker", pushToTalk: windows ? "global" : "focused" };
+      return { kind: "tauri", appVersion: await getVersion(), systemAudio: windows ? "native" : "picker", pushToTalk: windows ? "global" : "focused", media: /Linux/i.test(globalThis.navigator?.userAgent ?? "") ? "native" : "web" };
     },
     // Comandos Rust em apps/desktop/src-tauri/src/lib.rs
     checkForUpdate(serverUrl) {
@@ -78,7 +78,7 @@ export function createTauriPlatform(): PlatformPort {
     },
     async setBadge(count) {
       const pixels = drawBadge(count);
-      await invoke("set_taskbar_badge", { rgba: pixels ? Array.from(pixels) : null, size: BADGE_SIZE });
+      await invoke("set_taskbar_badge", { rgba: pixels ? Array.from(pixels) : null, size: BADGE_SIZE, count: count > 0 ? count : null });
     },
     async requestAttention() {
       await invoke("request_attention");
@@ -88,6 +88,8 @@ export function createTauriPlatform(): PlatformPort {
     },
     // Rust em apps/desktop/src-tauri/src/push_to_talk.rs: consulta só esta tecla, sem gancho de teclado.
     async watchPushToTalk(code, onChange) {
+      // Linux (e outros): a tecla global chega na L2 (doc 13); por enquanto, com a janela em foco
+      if (!/Windows/i.test(globalThis.navigator?.userAgent ?? "")) return watchFocusedPushToTalk(code, onChange);
       const vk = pttVirtualKey(code);
       if (vk === null) throw new Error("Essa tecla não pode ser usada para apertar para falar. Escolha outra.");
       let active = true;

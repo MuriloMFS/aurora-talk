@@ -1,5 +1,5 @@
 import { isWebUrl, type PlatformPort } from "./index";
-import { pttCodeFromEvent } from "./push-to-talk";
+import { watchFocusedPushToTalk } from "./push-to-talk";
 
 /** Último uso do teclado/mouse dentro da página (o navegador não vê o resto do computador). */
 let lastActivity = Date.now();
@@ -17,7 +17,7 @@ export function createBrowserPlatform(): PlatformPort {
   return {
     kind: "browser",
     async getInfo() {
-      return { kind: "browser", appVersion: "dev", systemAudio: "picker", pushToTalk: "focused" };
+      return { kind: "browser", appVersion: "dev", systemAudio: "picker", pushToTalk: "focused", media: "web" };
     },
     async checkForUpdate() {
       return null; // o navegador sempre roda a versão atual do código
@@ -54,25 +54,7 @@ export function createBrowserPlatform(): PlatformPort {
     },
     // O navegador só vê teclas com a página em foco; perder o foco conta como soltar.
     async watchPushToTalk(code, onChange) {
-      let pressed = false;
-      const set = (next: boolean) => {
-        if (next === pressed) return;
-        pressed = next;
-        onChange(next);
-      };
-      const onInput = (event: KeyboardEvent | MouseEvent) => {
-        if (pttCodeFromEvent(event) !== code) return;
-        set(event.type === "keydown" || event.type === "mousedown");
-      };
-      const onBlur = () => set(false);
-      const types = ["keydown", "keyup", "mousedown", "mouseup"] as const;
-      for (const type of types) globalThis.addEventListener?.(type, onInput as EventListener, { capture: true });
-      globalThis.addEventListener?.("blur", onBlur);
-      return () => {
-        for (const type of types) globalThis.removeEventListener?.(type, onInput as EventListener, { capture: true });
-        globalThis.removeEventListener?.("blur", onBlur);
-        set(false);
-      };
+      return watchFocusedPushToTalk(code, onChange);
     },
   };
 }

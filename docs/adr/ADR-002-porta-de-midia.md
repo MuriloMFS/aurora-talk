@@ -14,7 +14,7 @@ Definir duas interfaces em TypeScript (pacote `packages/platform`) e **nunca** c
 ### `MediaEngine` — voz, vídeo e tela
 `join(room, token)`, `leave()`, `setMic/Deafen`, `selectDevices`, `setNoiseSuppression/Echo/AGC`, `setUserVolume/Pan`, `startScreenShare(source, {audio})`, `stopScreenShare()`, `setPtt(active)`, eventos (`speaking`, `connectionQuality`, `participants`, `error`). Implementações:
 1. **`WebRtcMediaEngine`** *(v1, Windows)* — `livekit-client` rodando no WebView2 (Chromium).
-2. **`NativeMediaEngine`** *(só se um gate do ADR-001 falhar, por plataforma)* — núcleo em Rust com LiveKit Rust SDK; captura de tela/áudio nativas (ex.: Windows.Graphics.Capture, WASAPI por processo) e quadros enviados à UI.
+2. **`NativeMediaEngine`** *(só se um gate do ADR-001 falhar, por plataforma; **o gate do Linux falhou: obrigatório no Linux, ver [ADR-003](ADR-003-linux-nativo.md)**)* — núcleo em Rust com LiveKit Rust SDK; captura de tela/áudio nativas (ex.: Windows.Graphics.Capture, WASAPI por processo) e quadros enviados à UI.
 Seleção **por detecção de capacidade** na inicialização (existência/funcionamento de `getUserMedia`, `getDisplayMedia`, *insertable streams*), com *override* por configuração.
 
 ## Consequências

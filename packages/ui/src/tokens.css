@@ -89,6 +89,31 @@
 
 /* ---------- Tokens independentes de tema ---------- */
 :root {
+  /* abertura do site (momento de marca): sempre escura, nos dois temas — contrastes conferidos
+     com scripts/contrast.mjs: texto 19,4:1 · secundário 12,6:1 · rosa do título 4,2:1 · laranja 9,2:1 (título grande: mínimo 3:1) */
+  --hero-bg: #12081f;
+  --hero-text: #ffffff;
+  --hero-text-secondary: #d6cce6;
+  --hero-border: rgb(255 255 255 / 0.55);
+  --hero-card: rgb(18 8 31 / 0.6); /* sobre o laranja mais forte, branco fica ~8:1 */
+  --hero-card-border: rgb(255 255 255 / 0.14);
+  --brand-orange: #ff9a3d;
+  --brand-pink: #db2777;
+  --brand-purple: #7c3aed;
+  /* a aurora atrás da página inteira (fixa na tela): roxo em cima, rosa e laranja embaixo à direita */
+  --page-aurora:
+    radial-gradient(110% 85% at 100% 100%, rgb(255 154 61 / 0.7) 0%, rgb(219 39 119 / 0.62) 28%, rgb(124 58 237 / 0.38) 52%, transparent 72%),
+    radial-gradient(70% 60% at 90% 0%, rgb(124 58 237 / 0.55) 0%, transparent 70%),
+    radial-gradient(60% 70% at 0% 60%, rgb(91 33 182 / 0.35) 0%, transparent 70%),
+    linear-gradient(160deg, #1a0a33 0%, var(--hero-bg) 60%);
+  --hero-topbar: rgb(18 8 31 / 0.72);
+  --hero-glow: 0 0 0 1px rgb(255 255 255 / 0.06), 0 30px 60px -20px rgb(219 39 119 / 0.35), 0 12px 32px rgb(0 0 0 / 0.6);
+  --hero-title-gradient: linear-gradient(90deg, var(--brand-pink) 0%, #e8467f 55%, var(--brand-orange) 100%);
+  --hero-button-gradient: linear-gradient(90deg, var(--brand-pink) 0%, var(--brand-purple) 100%);
+  --weight-black: 900;
+}
+
+:root {
   /* paleta de avatar padrão: texto --on-avatar >= 4,5:1 em todas (verificado 2026-11-12) */
   --avatar-0: #0f766e;
   --avatar-1: #6d28d9;
@@ -173,6 +198,7 @@
   --tile-size: 48px;
   --sidebar-width: 240px;
   --members-width: 240px;
+  --search-panel-width: 380px;
   --chat-min-width: 480px;
   --header-height: 48px;
   --userpanel-height: 52px;

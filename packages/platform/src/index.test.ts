@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { badgeText, createPlatform, detectPlatformKind, isWebUrl } from "./index";
+import { badgeText, createMediaEngine, createPlatform, detectPlatformKind, isWebUrl } from "./index";
 
 describe("PlatformPort", () => {
   it("detecta 'browser' fora do runtime do Tauri", () => {
@@ -9,7 +9,16 @@ describe("PlatformPort", () => {
   it("a implementação browser responde sem APIs nativas", async () => {
     const platform = await createPlatform("browser");
     expect(platform.kind).toBe("browser");
-    await expect(platform.getInfo()).resolves.toEqual({ kind: "browser", appVersion: "dev", systemAudio: "picker", pushToTalk: "focused" });
+    await expect(platform.getInfo()).resolves.toEqual({ kind: "browser", appVersion: "dev", systemAudio: "picker", pushToTalk: "focused", media: "web" });
+  });
+
+  it("sem WebRTC (WebKitGTK do Linux), a voz explica em vez de falhar calada", async () => {
+    expect(typeof (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection).toBe("undefined"); // Node não tem
+    const engine = await createMediaEngine();
+    await expect(engine.join({ url: "ws://x", token: "t" }, { onStateChange() {}, onSpeakingChange() {}, onScreenSharesChange() {} }, { muted: false, deafened: false })).rejects.toMatchObject({
+      name: "MediaUnavailableError",
+    });
+    await expect(engine.leave()).resolves.toBeUndefined();
   });
 
   it("só links da web saem do app; selo vira 9+ acima de 9", () => {

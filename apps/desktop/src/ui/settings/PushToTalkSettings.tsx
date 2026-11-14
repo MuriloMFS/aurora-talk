@@ -59,7 +59,9 @@ export function PushToTalkSettings({ platform }: { platform: PlatformInfo | null
       description={
         global
           ? "Apertar para falar funciona com o Aurora em segundo plano, inclusive com um jogo na frente. O Aurora observa só a tecla escolhida, e só enquanto você está numa sala de voz."
-          : "No navegador, apertar para falar só funciona com a janela do Aurora em foco. No app instalado, funciona em qualquer janela."
+          : platform?.kind === "tauri"
+            ? "No app para Linux, por enquanto apertar para falar só funciona com a janela do Aurora em foco. A tecla em qualquer janela (inclusive com um jogo na frente) chega numa próxima versão."
+            : "No navegador, apertar para falar só funciona com a janela do Aurora em foco. No app instalado, funciona em qualquer janela."
       }
     >
       <RadioCards legend="Como o microfone abre" name="input-mode" value={voice.inputMode} options={MODES} onChange={(inputMode) => patchSettings("voice", { inputMode })} />

@@ -67,6 +67,8 @@ export function SliderField({
   step = 1,
   format,
   onChange,
+  disabled,
+  hint,
 }: {
   label: string;
   value: number;
@@ -75,10 +77,14 @@ export function SliderField({
   step?: number;
   format: (value: number) => string;
   onChange: (value: number) => void;
+  disabled?: boolean;
+  /** Explicação embaixo (ex.: por que está desativado). */
+  hint?: string;
 }) {
   const id = useId();
+  const hintId = useId();
   return (
-    <div className="field settings-slider">
+    <div className={disabled ? "field settings-slider settings-slider--disabled" : "field settings-slider"}>
       <div className="settings-slider__head">
         <label htmlFor={id} className="field__label">
           {label}
@@ -96,8 +102,15 @@ export function SliderField({
         step={step}
         value={value}
         aria-valuetext={format(value)}
+        aria-describedby={hint ? hintId : undefined}
+        disabled={disabled}
         onChange={(event) => onChange(Number(event.target.value))}
       />
+      {hint && (
+        <p id={hintId} className="field__hint">
+          {hint}
+        </p>
+      )}
     </div>
   );
 }

@@ -3,16 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="dark light" />
+    <meta name="color-scheme" content="dark" />
     <title>Aurora — o lugar da sua turma</title>
-    <meta name="description" content="Transmita o jogo em até 1080p a 60 fps, com o som junto, de graça. Sem plano pago, sem anúncios e sem rastreadores. Para Windows 10 e 11." />
+    <meta name="description" content="Transmita o jogo em até 1080p a 60 fps, com o som junto, de graça. Sem plano pago, sem anúncios e sem rastreadores. Para Windows e Linux." />
     <meta property="og:title" content="Aurora — o lugar da sua turma" />
-    <meta property="og:description" content="Transmita o jogo em até 1080p a 60 fps, com o som junto, de graça. Para Windows 10 e 11." />
+    <meta property="og:description" content="Transmita o jogo em até 1080p a 60 fps, com o som junto, de graça. Para Windows e Linux." />
     <meta property="og:type" content="website" />
     <meta property="og:image" content="/og.webp" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <!-- tema antes do 1º paint, em arquivo próprio (CSP sem scripts inline) -->
-    <script src="/theme-init.js"></script>
   </head>
   <body>
     <a class="skip-link" href="#conteudo">Pular para o conteúdo</a>
@@ -24,40 +22,79 @@
           <span class="brand__name">Aurora</span>
         </a>
         <nav class="topnav" aria-label="Principal">
+          <a href="#recursos">Recursos</a>
           <a href="#transmissao">Transmissão</a>
-          <a href="#gratis">Grátis</a>
           <a href="#perguntas">Perguntas</a>
         </nav>
         <div class="topbar__actions">
-          <button type="button" class="icon-button" id="theme-toggle" aria-label="Trocar tema">
-            <svg class="icon icon--moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" /></svg>
-            <svg class="icon icon--sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" /></svg>
-          </button>
-          <a class="button button--primary button--small" href="/download/windows" data-download>Baixar</a>
+          <a class="pill pill--brand pill--small" href="/download/windows" data-download>Baixar</a>
         </div>
       </div>
     </header>
 
     <main id="conteudo">
-      <!-- ================= abertura ================= -->
-      <section class="hero" aria-labelledby="hero-title">
-        <div class="hero__head">
-          <h1 id="hero-title" class="hero__title">O lugar da sua turma.</h1>
-        </div>
-        <div class="hero__side">
-          <p class="hero__lead">Transmita o jogo em até 1080p a 60 fps, com o som junto, de graça.</p>
+      <!-- ================= abertura (momento de marca: sempre escura) ================= -->
+      <div class="stage">
+        <section class="hero" aria-labelledby="hero-title">
+          <h1 id="hero-title" class="hero__title">
+            <span class="hero__line">Sua turma,</span>
+            <span class="hero__line">sua voz,</span>
+            <span class="hero__line hero__line--brand">seu jogo.</span>
+          </h1>
+          <p class="hero__lead">Converse, jogue junto e mostre a tela com o som do jogo. Tudo num lugar só, de graça.</p>
           <div class="hero__actions">
-            <a class="button button--primary button--large" href="/download/windows" data-download>
+            <a class="pill pill--brand" href="/download/windows" data-download>
               <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" /></svg>
-              Baixar para Windows
+              <span data-download-label>Baixar para Windows</span>
             </a>
+            <a class="pill pill--outline" href="#transmissao">Como funciona</a>
           </div>
           <p class="hero__meta" data-release-meta aria-live="polite">Windows 10 e 11</p>
+          <p class="download-other" data-download-other hidden></p>
           <p class="platform-note" id="platform-note" hidden>
-            Por enquanto o Aurora existe só para Windows. Abra esta página no computador para baixar.
+            Por enquanto o Aurora existe para Windows e Linux. Abra esta página no computador para baixar.
           </p>
-        </div>
+        </section>
 
+        <ul class="cards" id="recursos" aria-label="O que tem no Aurora">
+          <li class="card">
+            <svg class="card__icon" viewBox="0 0 48 48" aria-hidden="true">
+              <circle cx="24" cy="15" r="7" /><circle cx="11" cy="19" r="5" /><circle cx="37" cy="19" r="5" />
+              <path d="M12 40c0-7 5.4-12 12-12s12 5 12 12Z" /><path d="M2 38c0-5 3.6-9 9-9 2 0 3.6.5 5 1.4-2.6 2.4-4.2 5.4-4.6 7.6Z" /><path d="M46 38c0-5-3.6-9-9-9-2 0-3.6.5-5 1.4 2.6 2.4 4.2 5.4 4.6 7.6Z" />
+            </svg>
+            <h2 class="card__title">Servidores da turma</h2>
+            <p class="card__text">Canais de texto e de voz, cargos, permissões por canal e convite por código.</p>
+          </li>
+          <li class="card">
+            <svg class="card__icon" viewBox="0 0 48 48" aria-hidden="true">
+              <path d="M14 12h20c6 0 10 5 11 12l1.4 9.5c.6 4-2.4 6.5-5.4 6.5-2.3 0-3.7-1.3-5-3l-2.6-3.5H14.6L12 37c-1.3 1.7-2.7 3-5 3-3 0-6-2.5-5.4-6.5L3 24c1-7 5-12 11-12Z" />
+              <rect class="card__icon-cut" x="12" y="18" width="3.4" height="11" rx="1.2" /><rect class="card__icon-cut" x="8.2" y="21.8" width="11" height="3.4" rx="1.2" />
+              <circle class="card__icon-cut" cx="33" cy="20.5" r="2.3" /><circle class="card__icon-cut" cx="37.5" cy="25" r="2.3" /><circle class="card__icon-cut" cx="28.5" cy="25" r="2.3" />
+            </svg>
+            <h2 class="card__title">Voz e tela para jogar</h2>
+            <p class="card__text">Voz sem ruído de fundo, apertar para falar até com o jogo na frente e tela em até 1080p a 60 fps com o som junto.</p>
+          </li>
+          <li class="card">
+            <svg class="card__icon" viewBox="0 0 48 48" aria-hidden="true">
+              <path d="M24 3 8 9v13c0 11 7 19 16 23 9-4 16-12 16-23V9Z" />
+              <path class="card__icon-cut" d="m16.5 24 5.2 5.2L32 19" fill="none" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+            <h2 class="card__title">Grátis de verdade</h2>
+            <p class="card__text">Sem plano pago, sem anúncios e sem rastreadores. A qualidade máxima vale para todo mundo.</p>
+          </li>
+        </ul>
+        <svg class="gradient-defs" aria-hidden="true" focusable="false">
+          <defs>
+            <linearGradient id="brand-icon" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" class="stop stop--pink" />
+              <stop offset="1" class="stop stop--purple" />
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+
+      <!-- ================= o app de verdade ================= -->
+      <section class="showcase" aria-label="O Aurora aberto">
         <figure class="hero__shot">
           <div class="window">
             <div class="window__bar" aria-hidden="true">
@@ -70,10 +107,9 @@
               src="./screens/app-dark.webp"
               width="2560"
               height="1680"
-              fetchpriority="high"
+              loading="lazy"
               alt="O Aurora aberto no servidor Turma do sábado: o canal geral com a conversa, quatro pessoas na sala de voz, uma delas transmitindo a tela ao vivo, e a lista de quem está online."
             />
-            <img class="shot shot--light" src="./screens/app-light.webp" width="2560" height="1680" loading="lazy" alt="O mesmo servidor do Aurora no tema claro." />
           </div>
         </figure>
       </section>
@@ -81,7 +117,7 @@
       <!-- ================= transmissão (o que o Aurora faz diferente) ================= -->
       <section class="feature" id="transmissao" aria-labelledby="transmissao-title">
         <div class="feature__copy">
-          <h2 id="transmissao-title" class="feature__title">Mostre o jogo com o som junto.</h2>
+          <h2 id="transmissao-title" class="feature__title">Mostre o jogo <span class="brand-text">com o som junto.</span></h2>
           <p class="feature__lead">
             Mostre a tela inteira ou só a janela do jogo. O som do computador vai junto e as vozes da sala ficam de fora, então ninguém escuta o próprio eco.
           </p>
@@ -89,33 +125,13 @@
         <figure class="feature__media">
           <div class="frame">
             <img class="shot shot--dark" src="./screens/share-dark.webp" width="1296" height="1406" loading="lazy" alt="Janela Transmitir sua tela: tela inteira ou uma janela, qualidades Leve (720p, 30 fps), Padrão (1080p, 30 fps) e Fluida (1080p, 60 fps), e a opção de transmitir o som do computador." />
-            <img class="shot shot--light" src="./screens/share-light.webp" width="1296" height="1406" loading="lazy" alt="A mesma janela no tema claro." />
           </div>
         </figure>
       </section>
 
-      <!-- ================= grátis ================= -->
-      <section class="split" id="gratis" aria-labelledby="gratis-title">
-        <h2 id="gratis-title" class="section-title">Grátis de verdade.</h2>
-        <dl class="rows">
-          <div class="row">
-            <dt>Sem plano pago</dt>
-            <dd>A qualidade máxima da tela e todo o resto valem para todo mundo.</dd>
-          </div>
-          <div class="row">
-            <dt>Sem anúncios</dt>
-            <dd>Nenhum banner e nenhuma oferta no meio da conversa.</dd>
-          </div>
-          <div class="row">
-            <dt>Sem rastreadores</dt>
-            <dd>O app não envia estatísticas de uso.</dd>
-          </div>
-        </dl>
-      </section>
-
       <!-- ================= perguntas ================= -->
       <section class="split" id="perguntas" aria-labelledby="perguntas-title">
-        <h2 id="perguntas-title" class="section-title">Perguntas.</h2>
+        <h2 id="perguntas-title" class="section-title">Ficou <span class="brand-text">alguma dúvida?</span></h2>
         <div class="faq">
           <details>
             <summary>O Windows avisou que o app é desconhecido. E agora?</summary>
@@ -128,20 +144,25 @@
             <p>Sim. Cada um baixa o Aurora por aqui, cria uma conta e entra no seu servidor pelo código de convite que você mandar.</p>
           </details>
           <details>
-            <summary>Funciona no Mac, no Linux ou no celular?</summary>
-            <p>Ainda não. Por enquanto, só no Windows 10 e 11.</p>
+            <summary>Funciona no Linux, no Mac ou no celular?</summary>
+            <p>
+              No Linux, sim: baixe o <a href="/download/linux">AppImage</a> (roda em qualquer distribuição) ou o <a href="/download/linux-deb">.deb</a> (Ubuntu, Debian e Mint).
+              No Linux, a voz já funciona; compartilhar a tela e apertar para falar com um jogo na frente chegam numa próxima versão. No Mac e no celular, ainda não.
+            </p>
           </details>
         </div>
       </section>
 
       <!-- ================= fechamento ================= -->
       <section class="closing" aria-labelledby="closing-title">
-        <h2 id="closing-title" class="closing__title">Chame a turma.</h2>
-        <a class="button button--primary button--large" href="/download/windows" data-download>
+        <h2 id="closing-title" class="closing__title">Chame <span class="brand-text">a turma.</span></h2>
+        <p class="closing__lead">Baixe, crie um servidor e mande o código de convite para a galera.</p>
+        <a class="pill pill--brand" href="/download/windows" data-download>
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" /></svg>
-          Baixar para Windows
+          <span data-download-label>Baixar para Windows</span>
         </a>
         <p class="closing__meta" data-release-meta>Windows 10 e 11</p>
+        <p class="download-other" data-download-other hidden></p>
       </section>
     </main>
 
@@ -152,10 +173,9 @@
           <span>Aurora</span>
         </div>
         <nav class="footer__nav" aria-label="Rodapé">
+          <a href="#recursos">Recursos</a>
           <a href="#transmissao">Transmissão</a>
-          <a href="#gratis">Grátis</a>
           <a href="#perguntas">Perguntas</a>
-          <a href="https://github.com/MuriloMFS/aurora-talk" rel="noopener">Código-fonte</a>
         </nav>
         <p class="footer__muted"><span data-release-version-label>Versão atual</span> · © 2026</p>
       </div>

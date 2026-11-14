@@ -86,7 +86,7 @@ await say(caio, "Chego 21h15, tô saindo do trabalho agora");
 await say(rafa, "Separei a config que a gente combinou ontem:\n```\nsensibilidade = 0.42\nfov = 103\n```");
 const m5 = await say(lia, "Fechou! Já deixei a sala de voz aberta. **Quem chegar primeiro escolhe o mapa.**");
 await say(rafa, `<@${lia.user.id}> então pode deixar que eu escolho`, m5.id);
-const m7 = await say(luisa, "||vou ganhar de novo||");
+const m7 = await say(luisa, "Hoje eu ganho de vocês 😎");
 for (const u of [davi, caio, lia]) await react(u, m1, "🔥");
 await react(rafa, m1, "👍");
 for (const u of [luisa, davi]) await react(u, m5, "✅");

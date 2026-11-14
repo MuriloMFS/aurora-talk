@@ -1,4 +1,4 @@
-import type { ApiErrorBody, Attachment, DmChannel, Relationship, SecurityInfo, UserSettings, AuditLogEntry, AuthResponse, Ban, Channel, ChannelType, Guild, Id, Invite, InviteDetails, Message, Overwrite, Role, User, VoiceToken } from "@aurora/schema";
+import type { PollCreate, MessageSearchResult, SearchHas, ApiErrorBody, Attachment, DmChannel, Relationship, SecurityInfo, UserSettings, AuditLogEntry, AuthResponse, Ban, Channel, ChannelType, Guild, Id, Invite, InviteDetails, Message, Overwrite, Role, User, VoiceToken } from "@aurora/schema";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -98,17 +98,39 @@ export class ApiClient {
   voiceToken(channelId: Id) {
     return this.request<VoiceToken>("POST", `/api/channels/${channelId}/voice`);
   }
-  listMessages(channelId: Id, before?: Id) {
-    const query = before ? `?before=${before}` : "";
+  /** Sem `page`: as mais recentes. `before`/`after`: página antes/depois; `around`: janela em volta. */
+  listMessages(channelId: Id, before?: Id, page?: { after?: Id; around?: Id }) {
+    const query = before ? `?before=${before}` : page?.after ? `?after=${page.after}` : page?.around ? `?around=${page.around}` : "";
     return this.request<Message[]>("GET", `/api/channels/${channelId}/messages${query}`);
   }
-  sendMessage(channelId: Id, content: string, nonce: string, replyToId?: Id, attachmentIds: Id[] = []) {
+  /** Busca no servidor inteiro (`scope.guildId`) ou numa conversa (`scope.channelId`). */
+  searchMessages(scope: { guildId: Id } | { channelId: Id }, params: { q?: string; authorId?: Id; channelId?: Id; has?: SearchHas[]; before?: number; after?: number; offset?: number }) {
+    const query = new URLSearchParams();
+    if (params.q) query.set("q", params.q);
+    if (params.authorId) query.set("authorId", params.authorId);
+    if (params.channelId) query.set("channelId", params.channelId);
+    if (params.has?.length) query.set("has", params.has.join(","));
+    if (params.before !== undefined) query.set("before", String(params.before));
+    if (params.after !== undefined) query.set("after", String(params.after));
+    if (params.offset) query.set("offset", String(params.offset));
+    const path = "guildId" in scope ? `/api/guilds/${scope.guildId}` : `/api/channels/${scope.channelId}`;
+    return this.request<MessageSearchResult>("GET", `${path}/messages/search?${query}`);
+  }
+  sendMessage(channelId: Id, content: string, nonce: string, replyToId?: Id, attachmentIds: Id[] = [], poll?: PollCreate) {
     return this.request<Message>("POST", `/api/channels/${channelId}/messages`, {
       content,
       nonce,
       ...(replyToId ? { replyToId } : {}),
       ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
+      ...(poll ? { poll } : {}),
     });
+  }
+  /** Votar (`add`) ou tirar o voto numa resposta da enquete. */
+  votePoll(channelId: Id, messageId: Id, answerId: number, add: boolean) {
+    return this.request<void>(add ? "PUT" : "DELETE", `/api/channels/${channelId}/polls/${messageId}/answers/${answerId}/votes/@me`);
+  }
+  endPoll(channelId: Id, messageId: Id) {
+    return this.request<Message>("POST", `/api/channels/${channelId}/polls/${messageId}/expire`);
   }
   /** Envia um arquivo para o canal (com progresso); depois a mensagem cita o id. */
   uploadAttachment(channelId: Id, file: Blob, meta: { filename: string; width?: number; height?: number }, onProgress?: (fraction: number) => void): Promise<Attachment> {

@@ -46,6 +46,17 @@ windows = { version = "0.62.2", features = [
   "Win32_UI_Input_KeyboardAndMouse",
 ] }
 
+# Linux: tempo parado pela área de trabalho (DBus) ou pelo X11 (ADR-003, docs/13-linux.md).
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+x11rb = { version = "0.13", features = ["screensaver"] }
+# Voz nativa no Linux: o WebKitGTK nao tem WebRTC (ADR-003, docs/spikes/voz-nativa-linux.md)
+livekit = { version = "0.11", default-features = false, features = ["native", "rustls-tls-webpki-roots"] }
+tokio = { version = "1", features = ["sync", "rt"] }
+# teste de microfone sem entrar em sala (o WebRTC so captura numa chamada)
+libpulse-binding = "2"
+libpulse-simple-binding = "2"
+
 # Perfil de release voltado a tamanho (orçamento do ADR-001 §7).
 [profile.release]
 codegen-units = 1

@@ -4,6 +4,9 @@ import websocket from "@fastify/websocket";
 import { z } from "zod";
 import { AccessToken, RoomServiceClient, TrackSource } from "livekit-server-sdk";
 import {
+  SEARCH_HAS,
+  type MessageSearchResult,
+  type SearchHas,
   GATEWAY_PATH,
   LIMITS,
   USERNAME_PATTERN,
@@ -64,7 +67,7 @@ import { nextId } from "./ids.ts";
 import type { IceServerSource } from "./turn.ts";
 import { registerUpdateRoutes } from "./updates.ts";
 
-export const SERVER_VERSION = "1.14.0";
+export const SERVER_VERSION = "1.17.0";
 
 export class HttpError extends Error {
   readonly status: number;
@@ -190,11 +193,26 @@ const channelBody = z.object({
   /** Só quem você liberar vê (você continua vendo). */
   private: z.boolean().optional(),
 });
+const pollBody = z.object({
+  question: z.string().trim().min(1, "Escreva a pergunta da enquete.").max(LIMITS.pollQuestionMax, `A pergunta pode ter no máximo ${LIMITS.pollQuestionMax} caracteres.`),
+  answers: z
+    .array(
+      z.object({
+        text: z.string().trim().min(1, "Toda resposta precisa de um texto.").max(LIMITS.pollAnswerMax, `Cada resposta pode ter no máximo ${LIMITS.pollAnswerMax} caracteres.`),
+        emoji: z.string().max(32).nullable().optional(),
+      }),
+    )
+    .min(LIMITS.pollAnswersMin, `A enquete precisa de pelo menos ${LIMITS.pollAnswersMin} respostas.`)
+    .max(LIMITS.pollAnswersMax, `A enquete pode ter no máximo ${LIMITS.pollAnswersMax} respostas.`),
+  durationHours: z.number().refine((h) => LIMITS.pollDurationsHours.includes(h), "Escolha uma das durações da lista."),
+  allowMultiselect: z.boolean().default(false),
+});
 const messageBody = z.object({
   // com anexo, o texto pode ficar vazio
   content: z.string().trim().max(LIMITS.messageMax, `A mensagem pode ter no máximo ${LIMITS.messageMax} caracteres.`).default(""),
   nonce: z.string().max(64).optional(),
   replyToId: z.string().max(20).optional(),
+  poll: pollBody.optional(),
   attachmentIds: z
     .array(z.string().max(20))
     .max(LIMITS.attachmentsPerMessage, `Dá para enviar até ${LIMITS.attachmentsPerMessage} arquivos por mensagem.`)
@@ -212,8 +230,24 @@ const ackBody = z.object({ messageId: z.string().max(20) });
 const editBody = z.object({ content: contentField });
 const pageQuery = z.object({
   before: z.string().optional(),
+  /** Mais novas que esta (carregar para baixo depois de pular para uma mensagem antiga). */
+  after: z.string().optional(),
+  /** Janela em volta desta mensagem (ela inclusa): ir até um resultado da busca ou uma resposta antiga. */
+  around: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
 });
+const searchQuery = z.object({
+  q: z.string().max(LIMITS.searchQueryMax).optional(),
+  authorId: z.string().max(20).optional(),
+  channelId: z.string().max(20).optional(),
+  has: z.string().max(40).optional(),
+  before: z.coerce.number().int().min(0).optional(),
+  after: z.coerce.number().int().min(0).optional(),
+  offset: z.coerce.number().int().min(0).max(LIMITS.searchCountMax).optional(),
+});
+/** Palavras do texto buscado (letras e números; o resto separa). No máximo 10, de até 50 letras. */
+export const searchTerms = (q: string | undefined): string[] =>
+  (q?.normalize("NFC").match(/[\p{L}\p{N}]+/gu) ?? []).slice(0, 10).map((t) => t.slice(0, 50));
 
 interface Deps {
   store: Store;
@@ -238,7 +272,7 @@ interface Deps {
    */
   trustCloudflare?: boolean;
   /** Só para testes: tentativas por minuto de login (padrão 10 por IP) e de código (padrão 6 a cada 5 min por conta). */
-  limits?: { auth?: number; mfa?: number };
+  limits?: { auth?: number; mfa?: number; search?: number };
 }
 
 const VOICE_TOKEN_TTL = "6h";
@@ -292,6 +326,7 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
   const messageLimiter = new RateLimiter(10, 10_000);
   const actionLimiter = new RateLimiter(30, 60_000);
   const reactionLimiter = new RateLimiter(20, 10_000);
+  const searchLimiter = new RateLimiter(limits?.search ?? 30, 60_000);
   const ackLimiter = new RateLimiter(60, 10_000);
   const uploadLimiter = new RateLimiter(30, 60_000);
 
@@ -1461,8 +1496,38 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     const { user } = authenticate(request);
     const channel = chatChannel(request.params.channelId, user.id);
     const query = pageQuery.parse(request.query);
+    const size = query.limit ?? LIMITS.pageSize;
+    if (query.around && isValidId(query.around)) return store.listMessagesAround(channel.id, query.around, size);
+    if (query.after && isValidId(query.after)) return store.listMessagesAfter(channel.id, query.after, size);
     const before = query.before && isValidId(query.before) ? query.before : null;
-    return store.listMessages(channel.id, before, query.limit ?? LIMITS.pageSize);
+    return store.listMessages(channel.id, before, size);
+  });
+
+  /* ---------- busca de mensagens: só nos canais que a pessoa vê AGORA (decidido aqui, nunca no app) ---------- */
+  const runSearch = (userId: Id, channelIds: Id[], raw: unknown): MessageSearchResult => {
+    limit(searchLimiter, `search:${userId}`);
+    const query = searchQuery.parse(raw);
+    const terms = searchTerms(query.q);
+    const has = (query.has ?? "").split(",").filter((h): h is SearchHas => (SEARCH_HAS as readonly string[]).includes(h));
+    const authorId = query.authorId && isValidId(query.authorId) ? query.authorId : undefined;
+    if (query.channelId) channelIds = channelIds.filter((id) => id === query.channelId);
+    if (terms.length === 0 && !authorId && has.length === 0 && query.before === undefined && query.after === undefined && !query.channelId) {
+      throw new HttpError(400, "invalid_request", "Digite o que procurar ou use um filtro (de:, em:, tem:, antes:, depois:).");
+    }
+    return store.searchMessages({ channelIds, terms, authorId, has, before: query.before, after: query.after, offset: query.offset ?? 0, limit: LIMITS.searchPageSize });
+  };
+
+  app.get<{ Params: { guildId: string } }>("/api/guilds/:guildId/messages/search", async (request) => {
+    const { user } = authenticate(request);
+    const guild = memberGuild(request.params.guildId, user.id);
+    const visible = store.channelsOf(guild.id).filter((c) => hasPermission(store.channelPermissionsOf(c, user.id), "VIEW_CHANNEL"));
+    return runSearch(user.id, visible.map((c) => c.id), request.query);
+  });
+
+  app.get<{ Params: { channelId: string } }>("/api/channels/:channelId/messages/search", async (request) => {
+    const { user } = authenticate(request);
+    const channel = chatChannel(request.params.channelId, user.id);
+    return runSearch(user.id, [channel.id], request.query);
   });
 
   app.post<{ Params: { channelId: string } }>("/api/channels/:channelId/messages", async (request, reply) => {
@@ -1472,7 +1537,12 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
     limit(messageLimiter, `msg:${user.id}`);
     const body = messageBody.parse(request.body);
     const attachmentIds = [...new Set(body.attachmentIds ?? [])];
-    if (!body.content && attachmentIds.length === 0) throw new HttpError(400, "invalid_request", "A mensagem está vazia.");
+    if (!body.content && attachmentIds.length === 0 && !body.poll) throw new HttpError(400, "invalid_request", "A mensagem está vazia.");
+    if (body.poll) {
+      requireChannelPermission(channel, user.id, "SEND_POLLS");
+      if (attachmentIds.length > 0) throw new HttpError(400, "invalid_request", "Envie a enquete sem anexos (mande os arquivos numa mensagem à parte).");
+      if (body.poll.answers.some((a) => a.emoji && !isValidEmoji(a.emoji))) throw new HttpError(400, "invalid_request", "Um dos emojis das respostas não é válido.");
+    }
     if (attachmentIds.length > 0 && store.pendingAttachments(attachmentIds.filter(isValidId), user.id, channel.id).length !== attachmentIds.length) {
       throw new HttpError(400, "attachment_not_found", "Um dos arquivos não foi encontrado (pode ter expirado). Envie de novo.");
     }
@@ -1483,12 +1553,64 @@ export async function buildApp({ store, gateway, logger = false, releasesDir, vo
       replyAuthorId = original.author.id;
     }
     const mentions = mentionsFor(channel, body.content, replyAuthorId, user.id);
-    const created = store.createMessage(channel.id, user, body.content, body.replyToId ?? null, mentions, attachmentIds);
+    const created = store.createMessage(channel.id, user, body.content, body.replyToId ?? null, mentions, attachmentIds, body.poll ?? null);
     store.ack(user.id, channel.id, created.id); // o que eu escrevi já está lido
     const message = { ...created, ...(body.nonce ? { nonce: body.nonce } : {}) };
     if (channel.dm) reopenDm(channel.id);
     gateway.dispatchToChannel(channel, { t: "MESSAGE_CREATE", d: message });
     return reply.status(201).send(message);
+  });
+
+  /* ---------- enquetes: votar (quem pode reagir), tirar o voto e encerrar antes (quem criou ou modera) ---------- */
+  type PollParams = { channelId: string; messageId: string; answerId: string };
+  const pollTarget = (params: { channelId: string; messageId: string }, userId: Id) => {
+    const { channel, message } = channelMessage(params.channelId, params.messageId, userId);
+    const state = store.pollState(message.id);
+    if (!state) throw new HttpError(404, "not_found", "Esta mensagem não tem enquete.");
+    return { channel, message, state };
+  };
+  const answerOf = (state: { answerIds: number[] }, raw: string): number => {
+    const answerId = Number(raw);
+    if (!Number.isInteger(answerId) || !state.answerIds.includes(answerId)) throw new HttpError(404, "not_found", "Resposta não encontrada.");
+    return answerId;
+  };
+
+  app.put<{ Params: PollParams }>("/api/channels/:channelId/polls/:messageId/answers/:answerId/votes/@me", async (request, reply) => {
+    const { user } = authenticate(request);
+    const { channel, message, state } = pollTarget(request.params, user.id);
+    requireChannelPermission(channel, user.id, "ADD_REACTIONS");
+    limit(reactionLimiter, `vote:${user.id}`);
+    const answerId = answerOf(state, request.params.answerId);
+    if (!state.open) throw new HttpError(400, "poll_ended", "A enquete já terminou.");
+    const { added, removed } = store.votePoll(message.id, answerId, user.id, !state.allowMultiselect);
+    for (const old of removed) gateway.dispatchToChannel(channel, { t: "MESSAGE_POLL_VOTE_REMOVE", d: { channelId: channel.id, messageId: message.id, answerId: old, userId: user.id } });
+    if (added) gateway.dispatchToChannel(channel, { t: "MESSAGE_POLL_VOTE_ADD", d: { channelId: channel.id, messageId: message.id, answerId, userId: user.id } });
+    return reply.status(204).send();
+  });
+
+  app.delete<{ Params: PollParams }>("/api/channels/:channelId/polls/:messageId/answers/:answerId/votes/@me", async (request, reply) => {
+    const { user } = authenticate(request);
+    const { channel, message, state } = pollTarget(request.params, user.id);
+    requireChannelPermission(channel, user.id, "ADD_REACTIONS");
+    limit(reactionLimiter, `vote:${user.id}`);
+    const answerId = answerOf(state, request.params.answerId);
+    if (!state.open) throw new HttpError(400, "poll_ended", "A enquete já terminou.");
+    if (store.unvotePoll(message.id, answerId, user.id)) {
+      gateway.dispatchToChannel(channel, { t: "MESSAGE_POLL_VOTE_REMOVE", d: { channelId: channel.id, messageId: message.id, answerId, userId: user.id } });
+    }
+    return reply.status(204).send();
+  });
+
+  app.post<{ Params: { channelId: string; messageId: string } }>("/api/channels/:channelId/polls/:messageId/expire", async (request) => {
+    const { user } = authenticate(request);
+    const { channel, message } = pollTarget(request.params, user.id);
+    if (message.author.id !== user.id && !hasPermission(store.channelPermissionsOf(channel, user.id), "MANAGE_MESSAGES")) {
+      throw new HttpError(403, "forbidden", "Só quem criou a enquete (ou quem gerencia mensagens) pode encerrá-la.");
+    }
+    if (!store.endPoll(message.id)) throw new HttpError(400, "poll_ended", "A enquete já terminou.");
+    const updated = store.getMessage(message.id)!;
+    gateway.dispatchToChannel(channel, { t: "MESSAGE_UPDATE", d: updated });
+    return updated;
   });
 
   app.patch<{ Params: { messageId: string } }>("/api/messages/:messageId", async (request) => {

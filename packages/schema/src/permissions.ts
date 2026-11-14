@@ -32,6 +32,8 @@ export const PERMISSIONS = {
   MODERATE_MEMBERS: 1 << 15,
   MUTE_MEMBERS: 1 << 16,
   MOVE_MEMBERS: 1 << 17,
+  // 1.17
+  SEND_POLLS: 1 << 18,
 } as const;
 
 export type PermissionName = keyof typeof PERMISSIONS;
@@ -45,7 +47,8 @@ export const DEFAULT_EVERYONE_PERMISSIONS: number =
   PERMISSIONS.ADD_REACTIONS |
   PERMISSIONS.CONNECT |
   PERMISSIONS.SPEAK |
-  PERMISSIONS.STREAM;
+  PERMISSIONS.STREAM |
+  PERMISSIONS.SEND_POLLS;
 
 /** Permissões que mudam canal a canal (as outras valem para o servidor inteiro). */
 export const CHANNEL_PERMISSIONS: number =
@@ -57,7 +60,8 @@ export const CHANNEL_PERMISSIONS: number =
   PERMISSIONS.SPEAK |
   PERMISSIONS.STREAM |
   PERMISSIONS.MUTE_MEMBERS |
-  PERMISSIONS.MOVE_MEMBERS;
+  PERMISSIONS.MOVE_MEMBERS |
+  PERMISSIONS.SEND_POLLS;
 
 /** Textos da tela de cargos (pt-BR), na ordem em que aparecem, por grupo. */
 export const PERMISSION_INFO: { group: string; items: { name: PermissionName; label: string; hint: string }[] }[] = [
@@ -85,7 +89,8 @@ export const PERMISSION_INFO: { group: string; items: { name: PermissionName; la
     group: "Texto",
     items: [
       { name: "SEND_MESSAGES", label: "Enviar mensagens", hint: "Escrever nos canais de texto." },
-      { name: "ADD_REACTIONS", label: "Adicionar reações", hint: "Reagir às mensagens com emoji." },
+      { name: "ADD_REACTIONS", label: "Adicionar reações", hint: "Reagir às mensagens com emoji e votar em enquetes." },
+      { name: "SEND_POLLS", label: "Criar enquetes", hint: "Criar enquetes nos canais de texto." },
       { name: "MANAGE_MESSAGES", label: "Gerenciar mensagens", hint: "Apagar mensagens de outras pessoas." },
     ],
   },

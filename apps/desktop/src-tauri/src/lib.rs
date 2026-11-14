@@ -1,6 +1,12 @@
 use std::sync::Mutex;
 
 mod desktop_settings;
+#[cfg(target_os = "linux")]
+mod linux_idle;
+#[cfg(target_os = "linux")]
+mod mic_test;
+#[cfg(target_os = "linux")]
+mod native_media;
 mod push_to_talk;
 mod system_audio;
 
@@ -104,7 +110,9 @@ async fn check_update(
     if !(base.starts_with("http://") || base.starts_with("https://")) {
         return Err("Endereço de servidor inválido.".into());
     }
-    let endpoint = format!("{base}/api/updates/{{{{target}}}}/{{{{arch}}}}/{{{{current_version}}}}");
+    // `bundle_type`: como o app foi instalado (nsis, msi, appimage, deb). No Linux, o servidor manda o
+    // pacote do mesmo tipo (o AppImage troca o arquivo; o .deb instala pelo dpkg).
+    let endpoint = format!("{base}/api/updates/{{{{target}}}}/{{{{arch}}}}/{{{{current_version}}}}?bundle={{{{bundle_type}}}}");
     let url = url::Url::parse(&endpoint).map_err(|e| e.to_string())?;
     let update = app
         .updater_builder()
@@ -148,18 +156,28 @@ async fn install_update(app: AppHandle, pending: State<'_, PendingUpdate>) -> Re
     app.restart();
 }
 
-/// Selo de menções sobre o ícone da barra de tarefas (Windows). A imagem (RGBA, quadrada) é
-/// desenhada pela interface; `None` tira o selo.
+/// Selo de menções no ícone do app. No Windows, uma imagem (RGBA, quadrada) desenhada pela interface
+/// sobre o ícone da barra de tarefas; no Linux, o contador do lançador (onde a área de trabalho mostra).
+/// `None`/0 tira o selo.
 #[tauri::command]
-fn set_taskbar_badge(window: tauri::WebviewWindow, rgba: Option<Vec<u8>>, size: u32) -> Result<(), String> {
-    let icon = match rgba {
-        Some(pixels) if pixels.len() == (size as usize) * (size as usize) * 4 && (8..=64).contains(&size) => {
-            Some(tauri::image::Image::new_owned(pixels, size, size))
-        }
-        Some(_) => return Err("Imagem do selo inválida.".into()),
-        None => None,
-    };
-    window.set_overlay_icon(icon).map_err(|e| e.to_string())
+fn set_taskbar_badge(window: tauri::WebviewWindow, rgba: Option<Vec<u8>>, size: u32, count: Option<i64>) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let _ = count;
+        let icon = match rgba {
+            Some(pixels) if pixels.len() == (size as usize) * (size as usize) * 4 && (8..=64).contains(&size) => {
+                Some(tauri::image::Image::new_owned(pixels, size, size))
+            }
+            Some(_) => return Err("Imagem do selo inválida.".into()),
+            None => None,
+        };
+        window.set_overlay_icon(icon).map_err(|e| e.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (rgba, size);
+        window.set_badge_count(count.filter(|n| *n > 0)).map_err(|e| e.to_string())
+    }
 }
 
 /// Pisca o ícone na barra de tarefas (menção com o app em segundo plano).
@@ -188,7 +206,11 @@ fn idle_seconds() -> u64 {
         }
         0
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        linux_idle::idle_seconds()
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         0
     }
@@ -232,18 +254,33 @@ fn create_tray(app: &AppHandle) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        // Primeiro plugin, de propósito: abrir o Aurora de novo (ou clicar numa notificação) só traz
-        // a janela que já está aberta, em vez de iniciar uma segunda cópia.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main_window(app)))
-        .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![desktop_settings::AUTOSTART_ARG])))
-        .manage(PendingUpdate::default())
-        .manage(DesktopPrefs::default())
-        .manage(system_audio::SystemAudio::default())
-        .manage(push_to_talk::PushToTalk::default())
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "linux")]
+    let builder = builder.manage(native_media::NativeMedia::default()).manage(mic_test::MicTest::default())
+        .invoke_handler(tauri::generate_handler![
+            check_update,
+            install_update,
+            set_taskbar_badge,
+            request_attention,
+            idle_seconds,
+            system_audio::system_audio_start,
+            system_audio::system_audio_stop,
+            push_to_talk::ptt_watch,
+            push_to_talk::ptt_stop,
+            desktop_settings::get_desktop_settings,
+            desktop_settings::set_desktop_settings,
+            native_media::native_media_devices,
+            native_media::native_media_join,
+            native_media::native_media_leave,
+            native_media::native_media_set_muted,
+            native_media::native_media_set_push_to_talk,
+            native_media::native_media_set_deafened,
+            native_media::native_media_apply_settings,
+            mic_test::mic_test_start,
+            mic_test::mic_test_stop
+        ]);
+    #[cfg(not(target_os = "linux"))]
+    let builder = builder
         .invoke_handler(tauri::generate_handler![
             check_update,
             install_update,
@@ -256,7 +293,20 @@ pub fn run() {
             push_to_talk::ptt_stop,
             desktop_settings::get_desktop_settings,
             desktop_settings::set_desktop_settings
-        ])
+        ]);
+    builder
+        // Primeiro plugin, de propósito: abrir o Aurora de novo (ou clicar numa notificação) só traz
+        // a janela que já está aberta, em vez de iniciar uma segunda cópia.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main_window(app)))
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![desktop_settings::AUTOSTART_ARG])))
+        .manage(PendingUpdate::default())
+        .manage(DesktopPrefs::default())
+        .manage(system_audio::SystemAudio::default())
+        .manage(push_to_talk::PushToTalk::default())
+
         // Fechar para a bandeja: a janela some, o app (e a voz) continuam. "Sair" fica no menu da bandeja.
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {

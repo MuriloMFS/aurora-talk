@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { listAudioDevices, onAudioDevicesChange, startMicrophoneTest, type AudioDevices, type MicrophoneTest, type PlatformInfo, type ScreenShareQuality } from "@aurora/platform";
+import { listVoiceDevices, onAudioDevicesChange, startVoiceMicrophoneTest, type AudioDevices, type MicrophoneTest, type PlatformInfo, type ScreenShareQuality } from "@aurora/platform";
 import { effectiveProcessing, patchSettings, useSettings, type InputProfile, type VoicePrefs } from "../../state/settings";
 import { QUALITIES, loadScreenShareOptions, saveScreenShareOptions, spec } from "../ScreenShareDialog";
 import { voiceSettingsOf } from "../../voice-settings";
@@ -25,7 +25,7 @@ export function VoiceSection({ platform }: { platform: PlatformInfo | null }) {
   useEffect(() => {
     let alive = true;
     const load = () =>
-      listAudioDevices()
+      listVoiceDevices(platform)
         .then((found) => alive && setDevices(found))
         .catch(() => alive && setDeviceError("Não foi possível listar os dispositivos de áudio. Confira se o microfone está conectado."));
     void load();
@@ -34,7 +34,9 @@ export function VoiceSection({ platform }: { platform: PlatformInfo | null }) {
       alive = false;
       stop();
     };
-  }, []);
+  }, [platform?.media]);
+  const native = platform?.media === "native";
+  const NATIVE_VOLUME_HINT = "No app para Linux, ajuste este volume pelo controle de som do sistema, por enquanto.";
   const withDefault = (list: AudioDevices["inputs"]) => (list.length > 0 ? list : [{ id: "default", label: "Padrão do Windows" }]).map((d) => ({ value: d.id, label: d.label }));
 
   // ---- teste do microfone ----
@@ -53,7 +55,10 @@ export function VoiceSection({ platform }: { platform: PlatformInfo | null }) {
   const startTest = async () => {
     setTestError(null);
     try {
-      testRef.current = await startMicrophoneTest(voiceSettingsOf(voice));
+      // no motor nativo, o microfone é medido pelo nome que a lista mostra ("default: …" = o padrão)
+      const deviceName =
+        devices.inputs.find((d) => d.id === voice.inputDeviceId)?.label ?? devices.inputs.find((d) => d.label.startsWith("default:"))?.label ?? "default:";
+      testRef.current = await startVoiceMicrophoneTest(platform, voiceSettingsOf(voice), deviceName);
       setTesting(true);
     } catch (error) {
       const name = (error as { name?: string } | null)?.name;
@@ -114,8 +119,8 @@ export function VoiceSection({ platform }: { platform: PlatformInfo | null }) {
             hint={platform?.kind === "browser" ? "No navegador, o som pode sair sempre no padrão do sistema." : undefined}
             onChange={(id) => setVoice({ outputDeviceId: id })}
           />
-          <SliderField label="Volume do microfone" value={voice.inputVolume} min={0} max={200} step={5} format={percent} onChange={(v) => setVoice({ inputVolume: v })} />
-          <SliderField label="Volume de quem fala" value={voice.outputVolume} min={0} max={100} step={5} format={percent} onChange={(v) => setVoice({ outputVolume: v })} />
+          <SliderField label="Volume do microfone" value={voice.inputVolume} min={0} max={200} step={5} format={percent} disabled={native} hint={native ? NATIVE_VOLUME_HINT : undefined} onChange={(v) => setVoice({ inputVolume: v })} />
+          <SliderField label="Volume de quem fala" value={voice.outputVolume} min={0} max={100} step={5} format={percent} disabled={native} hint={native ? NATIVE_VOLUME_HINT : undefined} onChange={(v) => setVoice({ outputVolume: v })} />
         </div>
 
         <div className="mic-test">
@@ -134,7 +139,7 @@ export function VoiceSection({ platform }: { platform: PlatformInfo | null }) {
             <span className="mic-test__fill" style={{ inlineSize: `${levelPercent}%` }} />
           </div>
         </div>
-        {testing && (
+        {testing && !native && (
           <SwitchRow
             label="Ouvir minha voz"
             hint="Use fone de ouvido para não dar microfonia."

@@ -390,6 +390,10 @@
   margin: 0;
 }
 /* apertar para falar: tecla escolhida + botão de trocar */
+.settings-slider--disabled .settings-range,
+.settings-slider--disabled .settings-slider__value {
+  opacity: 0.5;
+}
 .ptt-key {
   display: flex;
   align-items: center;

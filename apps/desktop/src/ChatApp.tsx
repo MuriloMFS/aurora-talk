@@ -43,6 +43,8 @@ import { plainText } from "./markdown";
 import { ChatPane } from "./ui/ChatPane";
 import { CreateChannelDialog, CreateGuildDialog, InviteDialog, JoinGuildDialog } from "./ui/dialogs";
 import { CenterState, MemberList, Rail, Sidebar, UserPanel, type MyVoice } from "./ui/shell";
+import { SearchPanel, type SearchView } from "./ui/SearchPanel";
+import { hasCriteria, parseSearch } from "./search-query";
 import { ScreenShareDialog } from "./ui/ScreenShareDialog";
 import { StreamStage } from "./ui/StreamStage";
 import { UpdateButton } from "./ui/update";
@@ -94,6 +96,7 @@ interface VoiceSession extends MyVoice {
 function voiceErrorMessage(error: unknown): string {
   if (error instanceof ApiError) return error.message;
   const name = (error as { name?: string } | null)?.name;
+  if (name === "MediaUnavailableError" && error instanceof Error) return error.message;
   if (name === "NotAllowedError") return "O Aurora não tem permissão para usar o microfone. Libere o acesso e tente de novo.";
   if (name === "NotFoundError") return "Nenhum microfone encontrado. Conecte um e tente de novo.";
   return "Não foi possível conectar à voz. Confira se o servidor de voz está ligado (pnpm voice).";
@@ -641,6 +644,69 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
     setDrawerOpen(false);
   };
 
+  // ---- busca de mensagens (painel no lugar dos membros) e "ir até a mensagem" ----
+  const searchScope: { guildId: Id } | { channelId: Id } | null = home ? (activeDm ? { channelId: activeDm.id } : null) : guild ? { guildId: guild.id } : null;
+  const searchScopeKey = searchScope ? ("guildId" in searchScope ? `g${searchScope.guildId}` : `c${searchScope.channelId}`) : "";
+  const [search, setSearch] = useState<(SearchView & { scopeKey: string; offset: number }) | null>(null);
+  const searchSeq = useRef(0);
+  useEffect(() => setSearch((current) => (current && current.scopeKey !== searchScopeKey ? null : current)), [searchScopeKey]);
+  const runSearch = async (query: string, offset = 0) => {
+    if (!searchScope) return;
+    const visibleChannels = guild ? guild.channelIds.map((id) => state.channels[id]).filter((c): c is Channel => c !== undefined) : [];
+    const parsed = parseSearch(query, { members: Object.values(chatMembers), channels: visibleChannels });
+    const seq = ++searchSeq.current;
+    const base = { query, text: parsed.text, problems: parsed.problems, scopeKey: searchScopeKey, offset };
+    if (!hasCriteria(parsed)) {
+      setSearch({ ...base, loading: false, error: parsed.problems.length ? null : "Digite o que procurar.", total: 0, messages: [] });
+      return;
+    }
+    setSearch((current) => ({ ...base, loading: true, error: null, total: offset > 0 && current ? current.total : 0, messages: offset > 0 && current ? current.messages : [] }));
+    try {
+      const result = await api.searchMessages(searchScope, { q: parsed.text, authorId: parsed.authorId, channelId: parsed.channelId, has: parsed.has, before: parsed.before, after: parsed.after, offset });
+      if (seq !== searchSeq.current) return; // chegou depois de outra busca
+      setSearch((current) => ({ ...base, loading: false, error: null, total: result.total, messages: offset > 0 && current ? [...current.messages, ...result.messages] : result.messages }));
+    } catch (error) {
+      if (seq !== searchSeq.current) return;
+      setSearch((current) => ({ ...base, loading: false, error: error instanceof ApiError ? error.message : "Não foi possível buscar agora. Tente de novo.", total: current?.total ?? 0, messages: current?.messages ?? [] }));
+    }
+  };
+  const [jumpTarget, setJumpTarget] = useState<{ channelId: Id; id: Id | "latest"; nonce: number } | null>(null);
+  const jumpNonce = useRef(0);
+  /** Vai até uma mensagem de qualquer canal que eu vejo: carrega a janela em volta se ela não estiver na tela. */
+  const jumpToMessage = async (targetId: Id, messageId: Id) => {
+    const loaded = store.getState().messages[targetId]?.items.some((m) => m.id === messageId);
+    if (!loaded) {
+      try {
+        const window = await api.listMessages(targetId, undefined, { around: messageId });
+        const target = BigInt(messageId);
+        const older = window.filter((m) => BigInt(m.id) <= target).length;
+        const newer = window.length - older;
+        const half = Math.floor(LIMITS.pageSize / 2);
+        store.dispatch({ type: "historyAround", channelId: targetId, messages: window, hasMore: older >= LIMITS.pageSize - half, hasNewer: newer >= half });
+      } catch (error) {
+        setChatNotice(error instanceof ApiError ? error.message : "Não foi possível abrir essa mensagem. Tente de novo.");
+        return;
+      }
+    }
+    if (!home && targetId !== channelId) selectChannel(targetId);
+    setJumpTarget({ channelId: targetId, id: messageId, nonce: ++jumpNonce.current });
+  };
+  const loadNewer = async (target: Id) => {
+    const last = store.getState().messages[target]?.items.at(-1);
+    if (!last) return;
+    const messages = await api.listMessages(target, undefined, { after: last.id });
+    store.dispatch({ type: "history", channelId: target, messages, mode: "newer", pageSize: LIMITS.pageSize });
+  };
+  const jumpToPresent = async (target: Id) => {
+    try {
+      const messages = await api.listMessages(target);
+      store.dispatch({ type: "history", channelId: target, messages, mode: "latest", pageSize: LIMITS.pageSize });
+      setJumpTarget({ channelId: target, id: "latest", nonce: ++jumpNonce.current });
+    } catch (error) {
+      setChatNotice(error instanceof ApiError ? error.message : "Não foi possível carregar as mensagens novas. Tente de novo.");
+    }
+  };
+
   const logout = async () => {
     await leaveVoice();
     try {
@@ -712,7 +778,7 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
   const otherBlocked = activeDm?.type === "dm" && activeDm.recipients[0] ? isBlocked(state, activeDm.recipients[0].id) : false;
 
   /** O painel de conversa, para canal de servidor ou conversa direta. */
-  const renderChat = (target: Channel, options: { canSend: boolean; canReact: boolean; canManageMessages: boolean; blockedReason: string | null; dm?: DmChannel }) => (
+  const renderChat = (target: Channel, options: { canSend: boolean; canReact: boolean; canManageMessages: boolean; canCreatePoll: boolean; blockedReason: string | null; dm?: DmChannel }) => (
     <ChatPane
       key={target.id}
       channel={target}
@@ -726,7 +792,14 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
       dm={options.dm ? { title: dmName(options.dm), group: options.dm.type === "group_dm" } : undefined}
       isBlocked={(userId) => isBlocked(state, userId)}
       onOpenUser={(user, at) => setUserMenu({ user, guildId: options.dm ? null : (guild?.id ?? null), ...at })}
-      searchPlaceholder={options.dm ? (options.dm.type === "group_dm" ? "Buscar no grupo" : undefined) : guild ? `Buscar em ${guild.name}` : undefined}
+      searchPlace={options.dm ? (options.dm.type === "group_dm" ? "o grupo" : "a conversa") : guild?.name}
+      canSearchPeople={!options.dm || options.dm.type === "group_dm"}
+      onSearch={(text) => void runSearch(text)}
+      activeSearch={search?.query ?? null}
+      jumpTarget={jumpTarget && jumpTarget.channelId === target.id ? jumpTarget : null}
+      onJumpToMessage={(messageId) => void jumpToMessage(target.id, messageId)}
+      onLoadNewer={() => loadNewer(target.id)}
+      onJumpToPresent={() => void jumpToPresent(target.id)}
       typingNames={typingNames}
       status={state.status}
       membersOpen={membersOpen}
@@ -735,7 +808,12 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
       onDismissNotice={() => setChatNotice(null)}
       onReact={toggleReaction}
       onOpenLink={openLink}
-      onToggleMembers={() => setMembersOpen((open) => !open)}
+      onToggleMembers={() => {
+        if (search) {
+          setSearch(null); // com a busca aberta, o botão volta para a lista de membros
+          setMembersOpen(true);
+        } else setMembersOpen((open) => !open);
+      }}
       onOpenDrawer={() => setDrawerOpen(true)}
       headerExtra={
         <>
@@ -766,6 +844,18 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
         store.dispatch({ type: "history", channelId: target.id, messages, mode: "older", pageSize: LIMITS.pageSize });
       }}
       onUpload={(file, meta, onProgress) => api.uploadAttachment(target.id, file, meta, onProgress)}
+      canCreatePoll={options.canCreatePoll}
+      onSendPoll={async (poll) => {
+        const message = await api.sendMessage(target.id, "", crypto.randomUUID(), undefined, [], poll);
+        ackedRef.current.set(target.id, message.id);
+        store.dispatch({ type: "messageUpsert", message });
+      }}
+      onVotePoll={async (message, answerId, add) => {
+        await api.votePoll(message.channelId, message.id, answerId, add);
+      }}
+      onEndPoll={async (message) => {
+        store.dispatch({ type: "messageUpsert", message: await api.endPoll(message.channelId, message.id) });
+      }}
       onSend={async (content, replyToId, attachmentIds) => {
         const message = await api.sendMessage(target.id, content, crypto.randomUUID(), replyToId ?? undefined, attachmentIds);
         ackedRef.current.set(target.id, message.id); // o servidor marca o que eu envio como lido
@@ -806,7 +896,7 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
   return (
     <div
       className="app"
-      data-members={membersOpen && ((!home && guild) || activeDm?.type === "group_dm") ? "open" : "closed"}
+      data-members={search && (activeDm || (!home && guild)) ? "search" : membersOpen && ((!home && guild) || activeDm?.type === "group_dm") ? "open" : "closed"}
       data-drawer={drawerOpen ? "open" : "closed"}
       data-has-guild={guild || home ? "yes" : "no"}
     >
@@ -858,12 +948,23 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
                   canSend: !otherBlocked,
                   canReact: !otherBlocked,
                   canManageMessages: false,
+                  canCreatePoll: !otherBlocked,
                   blockedReason: otherBlocked ? "Você bloqueou esta pessoa. Desbloqueie (no topo da conversa) para voltar a conversar." : null,
                   dm: activeDm,
                 },
               )
             : <FriendsView relationships={relationships} api={api} onMessage={(user) => void openDmWith([user.id]).catch(() => undefined)} onOpenDrawer={() => setDrawerOpen(true)} />}
-          {activeDm?.type === "group_dm" && membersOpen && (
+          {search && (
+            <SearchPanel
+              view={search}
+              channelsById={state.channels}
+              showChannel={false}
+              onJump={(message) => void jumpToMessage(message.channelId, message.id)}
+              onMore={() => void runSearch(search.query, search.messages.length)}
+              onClose={() => setSearch(null)}
+            />
+          )}
+          {!search && activeDm?.type === "group_dm" && membersOpen && (
             <MemberList members={Object.values(dmMembers)} ownerId={activeDm.ownerId ?? ""} roles={[]} meId={me.id} onOpenUser={(user, at) => setUserMenu({ user, guildId: null, ...at })} />
           )}
         </>
@@ -939,10 +1040,21 @@ export function ChatApp({ session, themePreference, onThemeChange, onLogout, ava
               canSend: hasPermission(channelPermissions, "SEND_MESSAGES"),
               canReact: hasPermission(channelPermissions, "ADD_REACTIONS"),
               canManageMessages: hasPermission(channelPermissions, "MANAGE_MESSAGES"),
+              canCreatePoll: hasPermission(channelPermissions, "SEND_POLLS"),
               blockedReason: timeoutUntil ? `Você está de castigo ${untilText(timeoutUntil)}. Até lá, dá para ler, mas não escrever nem reagir.` : null,
             })
           )}
-          {membersOpen && !stageOpen && (
+          {search && !stageOpen && (
+            <SearchPanel
+              view={search}
+              channelsById={state.channels}
+              showChannel={!home}
+              onJump={(message) => void jumpToMessage(message.channelId, message.id)}
+              onMore={() => void runSearch(search.query, search.messages.length)}
+              onClose={() => setSearch(null)}
+            />
+          )}
+          {!search && membersOpen && !stageOpen && (
             <MemberList
               members={members}
               ownerId={guild.ownerId}

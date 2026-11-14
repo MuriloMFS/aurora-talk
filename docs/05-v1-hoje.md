@@ -155,6 +155,32 @@
   - O Aurora observa só a tecla escolhida, e só enquanto você está numa sala de voz.
   - Atraso ao soltar ajustável e sons de abrir e fechar (dá para desligar em Sons).
   - O painel de voz mostra "Aperte V para falar" ou "Microfone aberto".
+- **1.15.0** — **buscar mensagens**:
+  - Na barra do topo, a busca agora procura mensagens (o botão ao lado troca para pessoas).
+  - Acha sem acento e pelo começo da palavra.
+  - Filtros `de:@pessoa`, `em:#canal`, `tem:anexo/imagem/link`, `antes:` e `depois:` (dd/mm/aaaa).
+  - Os resultados aparecem à direita; clicar leva até a mensagem, mesmo antiga, com "Ir para o presente" para voltar.
+  - Só aparecem mensagens de canais que você vê.
+  - Funciona também nas conversas diretas.
+  - Painel de voz reorganizado: microfone, fone e tela numa fileira própria, e o estado da voz não quebra mais a linha.
+- **1.15.1** — **Aurora para Linux**:
+  - App nativo em `.AppImage` (qualquer distribuição) e `.deb` (Ubuntu, Debian, Mint), com atualização automática assinada: o AppImage troca o próprio arquivo e o `.deb` instala pelo `dpkg`.
+  - O selo de menções e o "ausente" funcionam no Linux.
+  - A voz e a tela ainda não funcionam no Linux: o app avisa e o chat segue normal. Elas chegam com o motor de voz nativo ([ADR-003](adr/ADR-003-linux-nativo.md), [doc 13](13-linux.md)).
+  - Correção: da 1.13.1 à 1.15.0, o app saiu sem o servidor oficial embutido, e a tela de login abria em `localhost`. Agora o `release` usa o servidor oficial por padrão.
+- **1.16.0** — **voz no Linux**:
+  - O app para Linux entra nas salas de voz pelo motor de voz nativo (WebRTC do próprio app, ADR-003), com mudo, ensurdecer, indicador de fala, escolha de microfone e saída e o tratamento do microfone (eco, ruído, ganho).
+  - O teste de microfone das configurações funciona no Linux.
+  - No Linux, apertar para falar funciona com a janela do Aurora em foco; a tecla em qualquer janela é a próxima fase (L2).
+  - Ainda não existem no Linux: compartilhar a tela e os controles de volume (por enquanto, o volume é o do sistema).
+  - Testado no Kali com uma pessoa no Windows na mesma sala: ouvir, falar (com voz real), mudo, ensurdecer e sair.
+- **1.16.1** — o texto do campo de mensagem volta a ficar alinhado com o "+" e o "enviar" (desalinhou com a escala de texto da 1.13.1).
+- **1.17.0** — **menu "+" e enquetes**:
+  - O "+" do campo de mensagem virou menu: "Enviar um arquivo" e "Criar enquete". Arrastar e `Ctrl+V` continuam enviando arquivos.
+  - Enquete de 2 a 10 respostas, com duração de 1 h a 1 semana e opção de mais de uma resposta.
+  - Votos aparecem ao vivo. O resultado aparece depois de votar ou no fim, com quem votou em quê.
+  - Quem criou (ou quem gerencia mensagens) pode encerrar antes.
+  - Permissão nova: "Criar enquetes" (no @todos). Votar usa "Adicionar reações".
 
 ## O que fica para depois (ordem sugerida)
 escolha de microfone/fone · DMs e amigos · anexos e prévia de links · cargos e permissões (pacote `permissions` do doc 03) · lista virtualizada para canais grandes · servidor hospedado (VPS) com HTTPS · depois, o restante do roadmap.

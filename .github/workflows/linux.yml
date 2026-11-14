@@ -1,0 +1,73 @@
+# Linux (ADR-003, docs/13-linux.md): a cada envio, confere tipos, roda os testes (TypeScript e Rust)
+# e gera o .deb no Ubuntu 24.04, a base mais antiga suportada. Não assina nada: a chave do updater
+# nunca sai do PC de quem publica (scripts/release.ps1 assina).
+name: Linux
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependências do sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config clang libclang-dev libwebkit2gtk-4.1-dev libssl-dev \
+            libxdo-dev libayatana-appindicator3-dev librsvg2-dev libgtk-3-dev libasound2-dev libpulse-dev \
+            libpipewire-0.3-dev libdbus-1-dev libglib2.0-dev libgbm-dev libva-dev libx11-dev libxtst-dev \
+            libxrandr-dev libxfixes-dev libxcomposite-dev libxdamage-dev file
+
+      # o WebRTC do LiveKit (voz nativa do Linux) exige clang 21+; o Ubuntu 24.04 traz o 18
+      - name: clang 21 (apt.llvm.org)
+        run: |
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          sudo bash /tmp/llvm.sh 21
+          echo "CC=clang-21" >> "$GITHUB_ENV"
+          echo "CXX=clang++-21" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: pnpm
+        run: corepack enable && pnpm --version
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - name: Instalar
+        run: pnpm install --frozen-lockfile
+
+      - name: Tipos
+        run: pnpm typecheck
+
+      - name: Testes
+        run: pnpm test
+
+      - name: Testes do Rust
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --lib
+
+      - name: Gerar o .deb
+        working-directory: apps/desktop
+        run: pnpm exec tauri build --bundles deb --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aurora-linux-deb
+          path: apps/desktop/src-tauri/target/release/bundle/deb/*.deb
+          retention-days: 7

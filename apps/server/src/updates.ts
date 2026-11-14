@@ -16,6 +16,10 @@ export interface ReleaseManifest {
 
 const VERSION = /^\d+\.\d+\.\d+$/;
 const WINDOWS = "windows-x86_64";
+/** Linux: o app diz como foi instalado (`?bundle=appimage|deb`), e cada um recebe o seu pacote. */
+const LINUX_APPIMAGE = "linux-x86_64-appimage";
+const LINUX_DEB = "linux-x86_64-deb";
+const BUNDLE = /^[a-z]{2,10}$/;
 const FILE = /^[A-Za-z0-9._-]+$/;
 
 export function compareVersions(a: string, b: string): number {
@@ -42,10 +46,12 @@ function readManifest(releasesDir: string): ReleaseManifest | null {
 export function registerUpdateRoutes(app: FastifyInstance, releasesDir: string): void {
   const root = resolve(releasesDir);
 
-  app.get<{ Params: { target: string; arch: string; current: string } }>("/api/updates/:target/:arch/:current", async (request, reply) => {
+  app.get<{ Params: { target: string; arch: string; current: string }; Querystring: { bundle?: string } }>("/api/updates/:target/:arch/:current", async (request, reply) => {
     const { target, arch, current } = request.params;
+    const bundle = typeof request.query.bundle === "string" && BUNDLE.test(request.query.bundle) ? request.query.bundle : null;
     const manifest = readManifest(root);
-    const platform = manifest?.platforms[`${target}-${arch}`];
+    // o pacote do tipo de instalação (AppImage troca o arquivo; .deb instala pelo dpkg); sem tipo, o padrão
+    const platform = (bundle ? manifest?.platforms[`${target}-${arch}-${bundle}`] : undefined) ?? manifest?.platforms[`${target}-${arch}`];
     if (!manifest || !platform || !VERSION.test(current) || compareVersions(manifest.version, current) <= 0) {
       return reply.status(204).send(); // já está na versão mais nova
     }
@@ -59,24 +65,51 @@ export function registerUpdateRoutes(app: FastifyInstance, releasesDir: string):
     };
   });
 
-  /** Para o site: versão atual do instalador do Windows (o botão "Baixar" mostra versão e tamanho). */
+  /** Tamanho do pacote publicado (null se não existe). */
+  const sizeOf = (manifest: ReleaseManifest, key: string): number | null => {
+    const platform = manifest.platforms[key];
+    const path = platform && FILE.test(platform.file) ? resolve(root, manifest.version, platform.file) : null;
+    return path && existsSync(path) ? statSync(path).size : null;
+  };
+
+  /** Para o site: versão e tamanho de cada download (o botão "Baixar" mostra os dois). */
   app.get("/api/releases/latest", async (_request, reply) => {
     const manifest = readManifest(root);
-    const windows = manifest?.platforms[WINDOWS];
-    const path = manifest && windows && FILE.test(windows.file) ? resolve(root, manifest.version, windows.file) : null;
-    if (!manifest || !windows || !path || !existsSync(path)) {
+    const size = manifest ? sizeOf(manifest, WINDOWS) : null;
+    if (!manifest || size === null) {
       return reply.status(404).send({ error: { code: "not_found", message: "Ainda não há versão publicada." } });
     }
-    return { version: manifest.version, notes: manifest.notes ?? "", pubDate: manifest.pub_date ?? null, size: statSync(path).size, download: "/download/windows" };
+    const appImage = sizeOf(manifest, LINUX_APPIMAGE);
+    const deb = sizeOf(manifest, LINUX_DEB);
+    return {
+      version: manifest.version,
+      notes: manifest.notes ?? "",
+      pubDate: manifest.pub_date ?? null,
+      size,
+      download: "/download/windows",
+      linux:
+        appImage === null && deb === null
+          ? null
+          : {
+              appImage: appImage === null ? null : { size: appImage, download: "/download/linux" },
+              deb: deb === null ? null : { size: deb, download: "/download/linux-deb" },
+            },
+    };
   });
 
-  /** Link fixo do site: sempre o instalador mais novo. */
-  app.get("/download/windows", async (_request, reply) => {
-    const manifest = readManifest(root);
-    const windows = manifest?.platforms[WINDOWS];
-    if (!manifest || !windows) return reply.status(404).send({ error: { code: "not_found", message: "Ainda não há versão publicada." } });
-    return reply.header("Cache-Control", "no-cache").redirect(`/api/updates/download/${manifest.version}/${encodeURIComponent(windows.file)}`, 302);
-  });
+  /** Links fixos do site: sempre o pacote mais novo. */
+  for (const [path, key] of [
+    ["/download/windows", WINDOWS],
+    ["/download/linux", LINUX_APPIMAGE],
+    ["/download/linux-deb", LINUX_DEB],
+  ] as const) {
+    app.get(path, async (_request, reply) => {
+      const manifest = readManifest(root);
+      const platform = manifest?.platforms[key];
+      if (!manifest || !platform) return reply.status(404).send({ error: { code: "not_found", message: "Ainda não há versão publicada." } });
+      return reply.header("Cache-Control", "no-cache").redirect(`/api/updates/download/${manifest.version}/${encodeURIComponent(platform.file)}`, 302);
+    });
+  }
 
   app.get<{ Params: { version: string; file: string } }>("/api/updates/download/:version/:file", async (request, reply) => {
     const { version, file } = request.params;

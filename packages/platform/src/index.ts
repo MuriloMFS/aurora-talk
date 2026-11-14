@@ -8,6 +8,7 @@ import type { VoiceSettings } from "./audio";
 import type { ScreenShareOptions, ScreenShareResult } from "./screen-share";
 
 export * from "./audio";
+import { listAudioDevices, startMicrophoneTest, type AudioDevices, type MicrophoneTest } from "./audio";
 export * from "./screen-share";
 export * from "./push-to-talk";
 
@@ -28,6 +29,11 @@ export interface PlatformInfo {
    * "focused" = só com a janela do app em foco (navegador).
    */
   pushToTalk: "global" | "focused";
+  /**
+   * Motor de voz: "web" = WebRTC do navegador interno (Windows, navegador); "native" = WebRTC do
+   * próprio app em Rust (Linux, onde o WebKitGTK não tem WebRTC, ADR-003).
+   */
+  media: "web" | "native";
 }
 
 /** Som do sistema capturado pelo app (sem o próprio app), já como trilha WebRTC. */
@@ -159,8 +165,61 @@ export interface MediaEngine {
 
 /** Hoje: WebRTC do próprio WebView via LiveKit. Carregado sob demanda (só quem entra em voz baixa o código). */
 export async function createMediaEngine(): Promise<MediaEngine> {
-  const [{ LiveKitMediaEngine }, platform] = await Promise.all([import("./livekit-media"), createPlatform()]);
-  return new LiveKitMediaEngine(platform, await platform.getInfo());
+  // Escolha por plataforma e capacidade (ADR-002/003): no Linux, o motor nativo do app; sem WebRTC e sem
+  // motor nativo, a voz avisa em vez de falhar calada; nos demais, o WebRTC do navegador interno.
+  const platform = await createPlatform();
+  const info = await platform.getInfo();
+  if (info.media === "native") {
+    const { NativeMediaEngine } = await import("./native-media");
+    return new NativeMediaEngine();
+  }
+  if (typeof (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection === "undefined") return new UnavailableMediaEngine();
+  const { LiveKitMediaEngine } = await import("./livekit-media");
+  return new LiveKitMediaEngine(platform, info);
+}
+
+/** Teste de microfone: pelo app quando é ele que cuida do áudio (`deviceName` = nome da lista); senão, pelo navegador. */
+export async function startVoiceMicrophoneTest(info: Pick<PlatformInfo, "media"> | null, settings: VoiceSettings, deviceName: string): Promise<MicrophoneTest> {
+  if (info?.media === "native") {
+    const { startNativeMicrophoneTest } = await import("./native-media");
+    return startNativeMicrophoneTest(deviceName);
+  }
+  return startMicrophoneTest(settings);
+}
+
+/** Microfones e saídas: pelo motor nativo quando é ele que cuida do áudio; senão, pelo navegador. */
+export async function listVoiceDevices(info: Pick<PlatformInfo, "media"> | null): Promise<AudioDevices> {
+  if (info?.media === "native") {
+    const { listNativeAudioDevices } = await import("./native-media");
+    return listNativeAudioDevices();
+  }
+  return listAudioDevices();
+}
+
+/** A voz não existe neste aparelho ainda; `message` diz o que houve e o que fazer. */
+export class MediaUnavailableError extends Error {
+  override name = "MediaUnavailableError";
+}
+
+const unavailableText = (): string =>
+  /Linux/i.test(globalThis.navigator?.userAgent ?? "")
+    ? "A voz ainda não funciona no app para Linux: ela chega com o motor de voz nativo, numa próxima versão. O chat e o resto funcionam normalmente."
+    : "A voz não funciona neste aparelho: o navegador interno não tem WebRTC. Atualize o sistema e tente de novo.";
+
+/** Motor para quando não há WebRTC: toda tentativa de entrar na voz explica por quê. */
+export class UnavailableMediaEngine implements MediaEngine {
+  async join(): Promise<void> {
+    throw new MediaUnavailableError(unavailableText());
+  }
+  async applyVoiceSettings(): Promise<void> {}
+  async leave(): Promise<void> {}
+  async setMuted(): Promise<void> {}
+  setDeafened(): void {}
+  async setPushToTalk(): Promise<void> {}
+  async startScreenShare(): Promise<never> {
+    throw new MediaUnavailableError(unavailableText());
+  }
+  async stopScreenShare(): Promise<void> {}
 }
 
 export function detectPlatformKind(): PlatformKind {

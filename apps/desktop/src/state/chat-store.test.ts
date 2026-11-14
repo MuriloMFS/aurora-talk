@@ -132,6 +132,30 @@ describe("chatReducer", () => {
     expect(state.reads["20"]?.lastReadId).toBe("105");
   });
 
+  it("janela antiga (ir até um resultado): troca o histórico, mensagem nova não entra, carregar as novas e voltar ao presente", () => {
+    let state = chatReducer(ready(), { type: "history", channelId: "20", messages: [msg("900", ana), msg("901", ana)], mode: "latest", pageSize: 2 });
+    state = chatReducer(state, { type: "historyAround", channelId: "20", messages: [msg("10", ana), msg("11", ana), msg("12", ana)], hasMore: true, hasNewer: true });
+    expect(state.messages["20"]).toMatchObject({ loaded: true, hasMore: true, hasNewer: true });
+    expect(state.messages["20"]!.items.map((m) => m.id)).toEqual(["10", "11", "12"]);
+    // chega mensagem nova: fica fora da janela (senão ficaria depois de um buraco)
+    state = chatReducer(state, { type: "messageUpsert", message: msg("950", ana) });
+    expect(state.messages["20"]!.items.map((m) => m.id)).toEqual(["10", "11", "12"]);
+    // carregar mais antigas mantém a janela "antiga"
+    state = chatReducer(state, { type: "history", channelId: "20", messages: [msg("9", ana)], mode: "older", pageSize: 50 });
+    expect(state.messages["20"]).toMatchObject({ hasMore: false, hasNewer: true });
+    // carregar as mais novas: página cheia continua faltando; página incompleta chegou ao presente
+    state = chatReducer(state, { type: "history", channelId: "20", messages: [msg("13", ana), msg("14", ana)], mode: "newer", pageSize: 2 });
+    expect(state.messages["20"]!.hasNewer).toBe(true);
+    state = chatReducer(state, { type: "history", channelId: "20", messages: [msg("950", ana)], mode: "newer", pageSize: 2 });
+    expect(state.messages["20"]!.hasNewer).toBe(false);
+    expect(state.messages["20"]!.items.map((m) => m.id)).toEqual(["9", "10", "11", "12", "13", "14", "950"]);
+    // "voltar ao presente" sobre uma janela antiga troca tudo
+    state = chatReducer(state, { type: "historyAround", channelId: "20", messages: [msg("10", ana)], hasMore: true, hasNewer: true });
+    state = chatReducer(state, { type: "history", channelId: "20", messages: [msg("949", ana), msg("950", ana)], mode: "latest", pageSize: 2 });
+    expect(state.messages["20"]!.items.map((m) => m.id)).toEqual(["949", "950"]);
+    expect(state.messages["20"]!.hasNewer).toBeUndefined();
+  });
+
   it("reações ao vivo: somar, não duplicar, tirar e sumir com o emoji vazio", () => {
     let state = chatReducer(ready(), { type: "history", channelId: "20", messages: [msg("5", ana)], mode: "latest", pageSize: 50 });
     const react = (t: "MESSAGE_REACTION_ADD" | "MESSAGE_REACTION_REMOVE", userId: string, emoji = "👍") =>
